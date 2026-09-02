@@ -79,10 +79,10 @@ void Error_Handler(void);
 #define AIN_AN4_GPIO_Port GPIOA
 #define AIN_AN1_Pin GPIO_PIN_3
 #define AIN_AN1_GPIO_Port GPIOA
-#define AOUT_AN1_Pin GPIO_PIN_4
-#define AOUT_AN1_GPIO_Port GPIOA
-#define AOUT_AN2_Pin GPIO_PIN_5
+#define AOUT_AN2_Pin GPIO_PIN_4
 #define AOUT_AN2_GPIO_Port GPIOA
+#define AOUT_AN1_Pin GPIO_PIN_5
+#define AOUT_AN1_GPIO_Port GPIOA
 #define AIN_12VOUT1_CURRSENSE_Pin GPIO_PIN_6
 #define AIN_12VOUT1_CURRSENSE_GPIO_Port GPIOA
 #define AIN_12VOUT2_CURRSENSE_Pin GPIO_PIN_7
