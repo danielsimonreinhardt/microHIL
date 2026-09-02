@@ -1,4 +1,15 @@
+# Python (host/)
 __pycache__/
 *.pyc
 .venv/
 venv/
+
+# STM32Cube / VS Code build artifacts (firmware/)
+build/
+Debug/
+Release/
+*.elf
+*.bin
+*.hex
+*.map
+.mxproject
