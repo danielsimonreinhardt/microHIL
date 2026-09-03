@@ -371,6 +371,13 @@ static void handle_cmd(const char *s, uint8_t len)
         return;
       }
       bitrate = bitrate * 10U + (uint32_t)(s[i] - '0');
+      /* Frueh abbrechen: ohne Deckel koennte eine absurd lange Zahl
+       * ueberlaufen und zufaellig in einer gueltigen Bitrate landen. */
+      if (bitrate > 1000000U)
+      {
+        reply_err();
+        return;
+      }
     }
     if (timing_for_bitrate(bitrate, &prescaler, &bs1, &bs2) != 0 ||
         CanIf_Configure(prescaler, bs1, bs2, 1U) != 0)

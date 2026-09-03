@@ -33,7 +33,14 @@ static uint32_t cfg_sjw = 1;
 
 /* Filterbaenke 0..13 gehoeren CAN1, ab 14 CAN2. bxCAN teilt sich die 28
  * Baenke zwischen beiden Instanzen; ohne diesen Split empfaengt CAN2 spaeter
- * (Fernsteuerung ueber CAN2) grundsaetzlich nichts. */
+ * (Fernsteuerung ueber CAN2) grundsaetzlich nichts.
+ *
+ * ACHTUNG fuer die CAN2-Anbindung: HAL_CAN_DeInit(&hcan1) setzt am Ende
+ * CAN_MCR_RESET auf der Master-Instanz, und der Filterblock gehoert
+ * physikalisch zu CAN1. Jedes Oeffnen von CAN1 (can_init() unten) loescht
+ * damit auch die Filter von CAN2. Sobald CAN2 in Betrieb geht, muessen
+ * dessen Filter nach jedem CAN1-Open neu gesetzt werden - oder can_init()
+ * darf kein DeInit mehr machen, sondern nur noch INRQ/Bit-Timing anfassen. */
 #define CAN2_START_FILTER_BANK 14U
 
 static uint32_t sjw_reg(uint32_t tq) { return (tq - 1U) << CAN_BTR_SJW_Pos; }
