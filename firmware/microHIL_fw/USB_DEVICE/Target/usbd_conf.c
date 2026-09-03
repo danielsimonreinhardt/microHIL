@@ -372,9 +372,20 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   HAL_PCD_RegisterIsoOutIncpltCallback(&hpcd_USB_OTG_FS, PCD_ISOOUTIncompleteCallback);
   HAL_PCD_RegisterIsoInIncpltCallback(&hpcd_USB_OTG_FS, PCD_ISOINIncompleteCallback);
 #endif /* USE_HAL_PCD_REGISTER_CALLBACKS */
-  HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_FS, 0x80);
-  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 0, 0x40);
-  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 1, 0x80);
+  /* FIFO-Aufteilung fuer das Composite-Device (zwei CDC-ACM-Funktionen).
+   * Der F446 hat 1,25 KB = 320 Words FIFO-RAM fuer OTG_FS; die alte
+   * Ein-Port-Belegung (0x80 + 0x40 + 0x80) war bereits voll ausgereizt.
+   *   EP 0x81/0x01 + 0x82 -> CDC1 (HIL-Protokoll)
+   *   EP 0x83/0x03 + 0x84 -> CDC2 (CAN1/SLCAN)
+   * Der TX-FIFO-Index ist die Endpunktnummer; die Adressen vergeben wir in
+   * usb_device.c fest, damit diese Zuordnung stimmt.
+   * Summe: 96 + 32 + 64 + 16 + 64 + 16 = 288 von 320 Words. */
+  HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_FS, 0x60);
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 0, 0x20);
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 1, 0x40);
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 2, 0x10);
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 3, 0x40);
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 4, 0x10);
   }
   return USBD_OK;
 }

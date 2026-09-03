@@ -94,6 +94,8 @@
 extern USBD_CDC_ItfTypeDef USBD_Interface_fops_FS;
 
 /* USER CODE BEGIN EXPORTED_VARIABLES */
+/* Zweite CDC-Funktion des Composite-Device: virtueller COM-Port fuer CAN1. */
+extern USBD_CDC_ItfTypeDef USBD_Interface_fops_CAN;
 
 /* USER CODE END EXPORTED_VARIABLES */
 

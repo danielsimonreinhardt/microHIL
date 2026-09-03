@@ -35,7 +35,20 @@
 #include "stm32f4xx_hal.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+/* ---- Composite-Device: zwei CDC-ACM-Funktionen = zwei virtuelle COM-Ports.
+ * Port A = HIL-Kommandoprotokoll, Port B = CAN1 (SLCAN).
+ *
+ * Bewusst hier im USER-CODE-Block und nicht in CMakeLists.txt: usbd_def.h
+ * zieht diese Datei ein, damit sehen *alle* Uebersetzungseinheiten der
+ * USB-Library das Symbol - auch usbd_core.c, das als eigene CMake-Library
+ * gebaut wird und die target_compile_definitions des Hauptziels nicht sieht.
+ *
+ * Das IAD ist zwingend: ohne es fasst Windows die vier Interfaces nicht zu
+ * zwei VCPs zusammen. */
+#define USE_USBD_COMPOSITE
+#define USBD_MAX_SUPPORTED_CLASS     2U
+#define USBD_CMPSIT_ACTIVATE_CDC     1U
+#define USBD_COMPOSITE_USE_IAD       1U
 /* USER CODE END INCLUDE */
 
 /** @addtogroup USBD_OTG_DRIVER
@@ -63,7 +76,9 @@
   */
 
 /*---------- -----------*/
-#define USBD_MAX_NUM_INTERFACES     1U
+/* Composite-Device mit zwei CDC-ACM-Funktionen: 4 Interfaces
+ * (je Control + Data). Von Hand gesetzt, CubeMX generiert hier 1U. */
+#define USBD_MAX_NUM_INTERFACES     4U
 /*---------- -----------*/
 #define USBD_MAX_NUM_CONFIGURATION     1U
 /*---------- -----------*/

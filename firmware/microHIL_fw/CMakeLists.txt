@@ -37,6 +37,14 @@ add_executable(${CMAKE_PROJECT_NAME})
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 
+# Der CompositeBuilder-Header muss auch fuer die separat gebaute
+# USB_Device_Library sichtbar sein: usbd_core.c und usbd_ctlreq.c ziehen ihn
+# ein, sobald USE_USBD_COMPOSITE gesetzt ist (siehe usbd_conf.h). Die
+# INTERFACE-Library stm32cubemx wird von allen Zielen eingebunden.
+target_include_directories(stm32cubemx INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/ST/STM32_USB_Device_Library/Class/CompositeBuilder/Inc
+)
+
 # Link directories setup
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
@@ -48,16 +56,25 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/Src/protocol.c
     Core/Src/can_if.c
     Core/Src/slcan.c
+    # Composite-Builder der ST-USB-Device-Library. Aus dem passenden
+    # Cube-FW-Paket (F4 V1.28.3) nachtraeglich hinzugefuegt, weil CubeMX das
+    # Composite-Device fuer die F4-Serie nicht selbst generiert. Bewusst hier
+    # und nicht in cmake/stm32cubemx/CMakeLists.txt, weil CubeMX diese Datei
+    # regeneriert.
+    Middlewares/ST/STM32_USB_Device_Library/Class/CompositeBuilder/Src/usbd_composite_builder.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    # (CompositeBuilder/Inc haengt an der stm32cubemx-INTERFACE-Library, s. o.)
 )
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
+    # USE_USBD_COMPOSITE steht in USB_DEVICE/Target/usbd_conf.h, damit es auch
+    # die separat gebaute USB_Device_Library erreicht.
 )
 
 # Remove wrong libob.a library dependency when using cpp files

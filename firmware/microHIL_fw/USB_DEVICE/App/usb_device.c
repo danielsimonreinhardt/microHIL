@@ -33,6 +33,13 @@
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 
+/* Endpunktadressen der beiden CDC-Funktionen, Reihenfolge wie vom
+ * CompositeBuilder erwartet: { Bulk IN, Bulk OUT, Interrupt IN }.
+ * Fest vorgegeben statt automatisch vergeben, damit der TX-FIFO-Index in
+ * usbd_conf.c (= Endpunktnummer) dazu passt. */
+static uint8_t CDC_EpAdd_Ctrl[3] = {0x81, 0x01, 0x82}; /* HIL-Protokoll */
+static uint8_t CDC_EpAdd_Can[3] = {0x83, 0x03, 0x84};  /* CAN1 / SLCAN */
+
 /* USER CODE END PV */
 
 /* USER CODE BEGIN PFP */
@@ -72,14 +79,34 @@ void MX_USB_DEVICE_Init(void)
   {
     Error_Handler();
   }
-  if (USBD_RegisterClass(&hUsbDeviceFS, &USBD_CDC) != USBD_OK)
+  /* Zwei CDC-ACM-Funktionen statt einer: Port A traegt das
+   * HIL-Kommandoprotokoll, Port B das SLCAN-Interface von CAN1. Die
+   * Endpunktadressen werden fest vorgegeben, damit die FIFO-Aufteilung in
+   * usbd_conf.c dazu passt (TX-FIFO-Index = Endpunktnummer). */
+  if (USBD_RegisterClassComposite(&hUsbDeviceFS, &USBD_CDC, CLASS_TYPE_CDC,
+                                  CDC_EpAdd_Ctrl) != USBD_OK)
   {
     Error_Handler();
   }
+  hUsbDeviceFS.classId = 0;
   if (USBD_CDC_RegisterInterface(&hUsbDeviceFS, &USBD_Interface_fops_FS) != USBD_OK)
   {
     Error_Handler();
   }
+
+  hUsbDeviceFS.classId = 1;
+  if (USBD_RegisterClassComposite(&hUsbDeviceFS, &USBD_CDC, CLASS_TYPE_CDC,
+                                  CDC_EpAdd_Can) != USBD_OK)
+  {
+    Error_Handler();
+  }
+  hUsbDeviceFS.classId = 1;
+  if (USBD_CDC_RegisterInterface(&hUsbDeviceFS, &USBD_Interface_fops_CAN) != USBD_OK)
+  {
+    Error_Handler();
+  }
+  hUsbDeviceFS.classId = 0;
+
   if (USBD_Start(&hUsbDeviceFS) != USBD_OK)
   {
     Error_Handler();

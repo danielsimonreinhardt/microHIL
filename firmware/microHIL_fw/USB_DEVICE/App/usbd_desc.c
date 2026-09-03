@@ -66,9 +66,15 @@
 #define USBD_LANGID_STRING     1033
 #define USBD_MANUFACTURER_STRING     "STMicroelectronics"
 #define USBD_PID_FS     22336
-#define USBD_PRODUCT_STRING_FS     "STM32 Virtual ComPort"
-#define USBD_CONFIGURATION_STRING_FS     "CDC Config"
-#define USBD_INTERFACE_STRING_FS     "CDC Interface"
+/* Composite-Device mit zwei VCPs. Der CompositeBuilder der ST-Library setzt
+ * fuer beide CDC-Funktionen den Interface-String-Index fest auf 0, deshalb
+ * lassen sich die Ports nicht ueber sprechende Namen unterscheiden - das
+ * macht die Hostseite ueber die Interface-Nummer (Windows MI_00/MI_02,
+ * Linux -if00/-if02), siehe host/microhil.py und docs/can-usb.md.
+ * MI_00 = HIL-Kommandoprotokoll, MI_02 = CAN1/SLCAN. */
+#define USBD_PRODUCT_STRING_FS     "microHIL"
+#define USBD_CONFIGURATION_STRING_FS     "microHIL Config"
+#define USBD_INTERFACE_STRING_FS     "microHIL Interface"
 
 #define USB_SIZ_BOS_DESC            0x0C
 

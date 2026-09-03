@@ -34,76 +34,6 @@
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
 
-/* ---- PROVISORIUM (entfaellt mit dem Composite-Device / Phase 3) ----
- * Solange beide Protokolle auf demselben COM-Port liegen, wird jede
- * eingehende Zeile anhand ihres Inhalts einsortiert. Zuverlaessig, weil sich
- * die beiden Kommandosaetze nicht ueberschneiden: HIL-Kommandos enthalten
- * immer ein Leerzeichen, '?' oder '*' (RELAY 1 1, IN?, *IDN?), SLCAN-
- * Kommandos bestehen nur aus einem Buchstaben plus Hex-/Dezimalziffern.
- * Am Zeilenende wird nicht unterschieden - sonst wuerde ein HIL-Kommando
- * mit CRLF faelschlich beim SLCAN-Parser landen. */
-#define CDC_SEG_MAX 80
-static uint8_t cdc_seg[CDC_SEG_MAX];
-static uint16_t cdc_seg_len = 0;
-
-static void CDC_DispatchSegment(void)
-{
-  uint16_t i;
-  uint8_t is_hil = 0;
-
-  if (cdc_seg_len == 0U)
-  {
-    return; /* z. B. das '\n' eines CRLF-Paars */
-  }
-
-  for (i = 0; i < cdc_seg_len; i++)
-  {
-    if (cdc_seg[i] == ' ' || cdc_seg[i] == '\t' ||
-        cdc_seg[i] == '?' || cdc_seg[i] == '*')
-    {
-      is_hil = 1;
-      break;
-    }
-  }
-
-  if (is_hil)
-  {
-    cdc_seg[cdc_seg_len] = '\n';
-    Protocol_RxChunk(cdc_seg, (uint32_t)cdc_seg_len + 1U);
-  }
-  else
-  {
-    cdc_seg[cdc_seg_len] = '\r';
-    Slcan_RxChunk(cdc_seg, (uint32_t)cdc_seg_len + 1U);
-  }
-
-  cdc_seg_len = 0;
-}
-
-static void CDC_DispatchRx(uint8_t *buf, uint32_t len)
-{
-  uint32_t i;
-
-  for (i = 0; i < len; i++)
-  {
-    uint8_t c = buf[i];
-
-    if (c == '\r' || c == '\n')
-    {
-      CDC_DispatchSegment();
-      continue;
-    }
-
-    if (cdc_seg_len < (CDC_SEG_MAX - 1U))
-    {
-      cdc_seg[cdc_seg_len++] = c;
-    }
-    /* Ueberlange Zeile: Rest verwerfen, beide Parser melden ihren Fehler
-     * ohnehin erst beim Terminator. */
-  }
-}
-/* ---- Ende Provisorium ---- */
-
 /* USER CODE END PV */
 
 /** @addtogroup STM32_USB_OTG_DEVICE_LIBRARY
@@ -134,6 +64,9 @@ static void CDC_DispatchRx(uint8_t *buf, uint32_t len)
   */
 
 /* USER CODE BEGIN PRIVATE_DEFINES */
+/* Reihenfolge der Registrierung in usb_device.c: erst HIL, dann CAN. */
+#define CDC_CLASS_ID_CTRL 0U
+#define CDC_CLASS_ID_CAN  1U
 /* USER CODE END PRIVATE_DEFINES */
 
 /**
@@ -166,6 +99,11 @@ uint8_t UserRxBufferFS[APP_RX_DATA_SIZE];
 uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 
 /* USER CODE BEGIN PRIVATE_VARIABLES */
+/* Eigene Puffer fuer die zweite CDC-Funktion (CAN1/SLCAN). Die beiden
+ * Instanzen duerfen sich keine Puffer teilen - sonst wuerde ein Transfer auf
+ * dem einen Port den anderen ueberschreiben. */
+static uint8_t UserRxBufferCAN[APP_RX_DATA_SIZE];
+static uint8_t UserTxBufferCAN[APP_TX_DATA_SIZE];
 
 /* USER CODE END PRIVATE_VARIABLES */
 
@@ -200,7 +138,11 @@ static int8_t CDC_Receive_FS(uint8_t* pbuf, uint32_t *Len);
 static int8_t CDC_TransmitCplt_FS(uint8_t *pbuf, uint32_t *Len, uint8_t epnum);
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_DECLARATION */
-
+static int8_t CDC_Init_CAN(void);
+static int8_t CDC_DeInit_CAN(void);
+static int8_t CDC_Control_CAN(uint8_t cmd, uint8_t *pbuf, uint16_t length);
+static int8_t CDC_Receive_CAN(uint8_t *pbuf, uint32_t *Len);
+static int8_t CDC_TransmitCplt_CAN(uint8_t *pbuf, uint32_t *Len, uint8_t epnum);
 /* USER CODE END PRIVATE_FUNCTIONS_DECLARATION */
 
 /**
@@ -216,6 +158,16 @@ USBD_CDC_ItfTypeDef USBD_Interface_fops_FS =
   CDC_TransmitCplt_FS
 };
 
+/* Zweite CDC-Funktion: virtueller COM-Port fuer CAN1 (SLCAN). */
+USBD_CDC_ItfTypeDef USBD_Interface_fops_CAN =
+{
+  CDC_Init_CAN,
+  CDC_DeInit_CAN,
+  CDC_Control_CAN,
+  CDC_Receive_CAN,
+  CDC_TransmitCplt_CAN
+};
+
 /* Private functions ---------------------------------------------------------*/
 /**
   * @brief  Initializes the CDC media low layer over the FS USB IP
@@ -225,7 +177,7 @@ static int8_t CDC_Init_FS(void)
 {
   /* USER CODE BEGIN 3 */
   /* Set Application Buffers */
-  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, UserTxBufferFS, 0);
+  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, UserTxBufferFS, 0, CDC_CLASS_ID_CTRL);
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, UserRxBufferFS);
   return (USBD_OK);
   /* USER CODE END 3 */
@@ -335,7 +287,7 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
   /* USER CODE BEGIN 6 */
   HAL_GPIO_TogglePin(DEBUG_LED_1_GPIO_Port, DEBUG_LED_1_Pin);
 
-  CDC_DispatchRx(Buf, *Len);
+  Protocol_RxChunk(Buf, *Len);
 
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
@@ -358,23 +310,76 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
 {
   uint8_t result = USBD_OK;
   /* USER CODE BEGIN 7 */
-  USBD_CDC_HandleTypeDef *hcdc = (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassData;
+  USBD_CDC_HandleTypeDef *hcdc =
+      (USBD_CDC_HandleTypeDef*)hUsbDeviceFS.pClassDataCmsit[CDC_CLASS_ID_CTRL];
   if (hcdc->TxState != 0){
     return USBD_BUSY;
   }
-  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, Buf, Len);
-  result = USBD_CDC_TransmitPacket(&hUsbDeviceFS);
+  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, Buf, Len, CDC_CLASS_ID_CTRL);
+  result = USBD_CDC_TransmitPacket(&hUsbDeviceFS, CDC_CLASS_ID_CTRL);
   /* USER CODE END 7 */
   return result;
 }
 
 /* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */
-/* Ausgabekanal des SLCAN-Layers. Bis zum Composite-Device teilt er sich den
- * Port mit dem HIL-Protokoll; danach zeigt diese Funktion auf die zweite
- * CDC-Instanz und sonst aendert sich nichts. */
+
+/* --- Zweite CDC-Funktion: virtueller COM-Port fuer CAN1 (SLCAN) ----------- */
+
+static int8_t CDC_Init_CAN(void)
+{
+  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, UserTxBufferCAN, 0, CDC_CLASS_ID_CAN);
+  USBD_CDC_SetRxBuffer(&hUsbDeviceFS, UserRxBufferCAN);
+  return (USBD_OK);
+}
+
+static int8_t CDC_DeInit_CAN(void)
+{
+  return (USBD_OK);
+}
+
+/* Line Coding / DTR-RTS werden ignoriert - die Baudrate eines VCP ist rein
+ * kosmetisch, genau wie beim HIL-Port. */
+static int8_t CDC_Control_CAN(uint8_t cmd, uint8_t *pbuf, uint16_t length)
+{
+  UNUSED(cmd);
+  UNUSED(pbuf);
+  UNUSED(length);
+  return (USBD_OK);
+}
+
+static int8_t CDC_Receive_CAN(uint8_t *Buf, uint32_t *Len)
+{
+  Slcan_RxChunk(Buf, *Len);
+
+  USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
+  USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+  return (USBD_OK);
+}
+
+static int8_t CDC_TransmitCplt_CAN(uint8_t *Buf, uint32_t *Len, uint8_t epnum)
+{
+  UNUSED(Buf);
+  UNUSED(Len);
+  UNUSED(epnum);
+  return (USBD_OK);
+}
+
+/* Ausgabekanal des SLCAN-Layers: geht auf die CAN-Instanz, damit das
+ * HIL-Protokoll auf seinem eigenen Port ungestoert bleibt. */
 uint8_t Slcan_UsbTransmit(uint8_t *buf, uint16_t len)
 {
-  return CDC_Transmit_FS(buf, len);
+  USBD_CDC_HandleTypeDef *hcdc =
+      (USBD_CDC_HandleTypeDef *)hUsbDeviceFS.pClassDataCmsit[CDC_CLASS_ID_CAN];
+
+  if (hcdc == NULL || hcdc->TxState != 0 || len > APP_TX_DATA_SIZE)
+  {
+    return USBD_BUSY;
+  }
+  /* Umkopieren ist Pflicht: der Aufrufer uebergibt einen Stack-Puffer, der
+   * USB-Transfer laeuft aber asynchron weiter. */
+  memcpy(UserTxBufferCAN, buf, len);
+  USBD_CDC_SetTxBuffer(&hUsbDeviceFS, UserTxBufferCAN, len, CDC_CLASS_ID_CAN);
+  return USBD_CDC_TransmitPacket(&hUsbDeviceFS, CDC_CLASS_ID_CAN);
 }
 /* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */
 
