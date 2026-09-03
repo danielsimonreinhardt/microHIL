@@ -7,6 +7,7 @@
 
 extern ADC_HandleTypeDef hadc1;
 extern DAC_HandleTypeDef hdac;
+extern TIM_HandleTypeDef htim3;
 
 typedef struct
 {
@@ -54,6 +55,10 @@ static const uint32_t ain_channel[4] = {ADC_CHANNEL_3, ADC_CHANNEL_0, ADC_CHANNE
 static const uint32_t curr_channel[2] = {ADC_CHANNEL_6, ADC_CHANNEL_7};
 /* AOUT1 -> PA5/DAC_CHANNEL_2, AOUT2 -> PA4/DAC_CHANNEL_1 (siehe microHIL_fw.ioc) */
 static const uint32_t dac_channel[2] = {DAC_CHANNEL_2, DAC_CHANNEL_1};
+/* PWM1..4 -> PC6..PC9 (TIM3 CH1..4). Treiben laut Schaltplan dieselbe
+ * Endstufe wie OUT1..4 -> softwareseitige Verriegelung in cmd_out_set/pwm_set. */
+static const uint32_t pwm_tim_channel[4] = {TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3, TIM_CHANNEL_4};
+#define TIM3_ARR 65535U
 
 #define RX_RING_SIZE 256
 #define LINE_MAX 64
@@ -142,6 +147,96 @@ static void dac_write_mv(uint32_t channel, int32_t mv)
   uint32_t raw = (uint32_t)(((uint32_t)mv * 4095UL) / 3300UL);
   HAL_DAC_SetValue(&hdac, channel, DAC_ALIGN_12B_R, raw);
   HAL_DAC_Start(&hdac, channel);
+}
+
+/* Schaltet PWM-Kanal idx (0-basiert) auf permille (0-1000) Duty Cycle.
+ * permille > 0 schaltet zwangsweise den Konflikt-OUT desselben Kanals ab. */
+static void pwm_set(int idx, int permille)
+{
+  if (permille < 0) permille = 0;
+  if (permille > 1000) permille = 1000;
+
+  if (permille > 0)
+  {
+    HAL_GPIO_WritePin(out_gpio[idx].port, out_gpio[idx].pin, GPIO_PIN_RESET);
+  }
+
+  uint32_t compare = ((uint32_t)permille * TIM3_ARR) / 1000U;
+  __HAL_TIM_SET_COMPARE(&htim3, pwm_tim_channel[idx], compare);
+
+  if (permille > 0)
+  {
+    HAL_TIM_PWM_Start(&htim3, pwm_tim_channel[idx]);
+  }
+  else
+  {
+    HAL_TIM_PWM_Stop(&htim3, pwm_tim_channel[idx]);
+  }
+}
+
+/* OUT 1-4 schaltet bei "an" zwangsweise den Konflikt-PWM-Kanal ab (siehe pwm_set). */
+static void cmd_out_set(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  char *a2 = strtok(NULL, " \t");
+  if (!a1 || !a2)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  int idx = atoi(a1);
+  if (idx < 1 || idx > 8)
+  {
+    reply_err("RANGE");
+    return;
+  }
+  int on = atoi(a2) ? 1 : 0;
+
+  if (on && idx <= 4)
+  {
+    __HAL_TIM_SET_COMPARE(&htim3, pwm_tim_channel[idx - 1], 0);
+    HAL_TIM_PWM_Stop(&htim3, pwm_tim_channel[idx - 1]);
+  }
+
+  HAL_GPIO_WritePin(out_gpio[idx - 1].port, out_gpio[idx - 1].pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+  reply_ok();
+}
+
+static void cmd_pwm(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  char *a2 = strtok(NULL, " \t");
+  if (!a1 || !a2)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  int idx = atoi(a1);
+  if (idx < 1 || idx > 4)
+  {
+    reply_err("RANGE");
+    return;
+  }
+  pwm_set(idx - 1, atoi(a2));
+  reply_ok();
+}
+
+static void cmd_pwm_query(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  if (!a1)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  int idx = atoi(a1);
+  if (idx < 1 || idx > 4)
+  {
+    reply_err("RANGE");
+    return;
+  }
+  uint32_t compare = __HAL_TIM_GET_COMPARE(&htim3, pwm_tim_channel[idx - 1]);
+  reply_val((int32_t)((compare * 1000UL) / TIM3_ARR));
 }
 
 static void digital_set(const gpio_t *table, int count)
@@ -272,11 +367,13 @@ static void handle_line(char *line)
   if (strcmp(cmd, "*IDN?") == 0)       { send_line("microHIL,fw=0.1.0\r\n"); }
   else if (strcmp(cmd, "RELAY") == 0)  { digital_set(relay_gpio, 4); }
   else if (strcmp(cmd, "RELAY?") == 0) { digital_get(relay_gpio, 4); }
-  else if (strcmp(cmd, "OUT") == 0)    { digital_set(out_gpio, 8); }
+  else if (strcmp(cmd, "OUT") == 0)    { cmd_out_set(); }
   else if (strcmp(cmd, "OUT?") == 0)   { digital_get(out_gpio, 8); }
   else if (strcmp(cmd, "IN?") == 0)    { cmd_in_query(); }
   else if (strcmp(cmd, "AOUT") == 0)   { cmd_aout(); }
   else if (strcmp(cmd, "AIN?") == 0)   { cmd_ain_query(); }
+  else if (strcmp(cmd, "PWM") == 0)    { cmd_pwm(); }
+  else if (strcmp(cmd, "PWM?") == 0)   { cmd_pwm_query(); }
   else if (strcmp(cmd, "PWR12") == 0)  { digital_set(pwr12_gpio, 2); }
   else if (strcmp(cmd, "PWR12?") == 0) { digital_get(pwr12_gpio, 2); }
   else if (strcmp(cmd, "CURR?") == 0)  { cmd_curr_query(); }

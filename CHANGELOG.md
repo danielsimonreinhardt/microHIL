@@ -12,3 +12,4 @@
 - Kommandoprotokoll für Relais/DIO/AIO/AOUT/12V-Ausgänge implementiert (`Core/Src/protocol.c`), Referenz in `docs/protocol.md`, Python-Client `host/microhil.py` — End-to-End auf Hardware getestet
 - Test-GUI (`host/gui.py`, PySide6) zum manuellen Durchtesten aller Funktionen
 - Fix: AOUT1/AOUT2-Zuordnung war vertauscht (PA4/PA5-Labels in CubeMX korrigiert, `dac_channel[]` in `protocol.c` entsprechend angepasst)
+- PWM-Kanäle PWM1-4 (PC6-9, TIM3) im Protokoll ergänzt, softwareseitig gegen OUT1-4 verriegelt (dieselbe Endstufe laut Schaltplan) — **noch nicht auf Hardware getestet**, ST-Link war beim Umsetzen getrennt. Build erfolgreich, GUI-Konstruktion geprüft.

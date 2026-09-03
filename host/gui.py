@@ -66,6 +66,7 @@ class MicroHILWindow(QMainWindow):
         self.relay_buttons: list[ToggleButton] = []
         self.out_buttons: list[ToggleButton] = []
         self.pwr12_buttons: list[ToggleButton] = []
+        self.pwm_spins: list[QSpinBox] = []
 
         self.setStatusBar(QStatusBar())
         self._build_ui()
@@ -97,6 +98,8 @@ class MicroHILWindow(QMainWindow):
         row2.addWidget(self._build_ain_box())
         row2.addWidget(self._build_pwr12_box())
         root.addLayout(row2)
+
+        root.addWidget(self._build_pwm_box())
 
     def _build_connection_box(self) -> QGroupBox:
         box = QGroupBox("Verbindung")
@@ -190,6 +193,20 @@ class MicroHILWindow(QMainWindow):
             self.curr_labels.append(curr_lbl)
         return box
 
+    def _build_pwm_box(self) -> QGroupBox:
+        box = QGroupBox("PWM (PC6-9, verriegelt mit OUT 1-4)")
+        layout = QGridLayout(box)
+        for i in range(4):
+            n = i + 1
+            layout.addWidget(QLabel(f"PWM {n} (‰)"), 0, i * 2)
+            spin = QSpinBox()
+            spin.setRange(0, 1000)
+            spin.setSingleStep(50)
+            spin.valueChanged.connect(lambda permille, n=n: self._set_pwm(n, permille))
+            layout.addWidget(spin, 0, i * 2 + 1)
+            self.pwm_spins.append(spin)
+        return box
+
     # --------------------------------------------------------- Verbindung
 
     def _refresh_ports(self) -> None:
@@ -257,6 +274,12 @@ class MicroHILWindow(QMainWindow):
             self._guarded(lambda: self.hil.set_relay(n, on))
 
     def _set_out(self, n: int, on: bool) -> None:
+        if on and n <= 4:
+            # Verriegelt mit PWM n auf der Firmware, hier nur die Anzeige nachziehen
+            spin = self.pwm_spins[n - 1]
+            spin.blockSignals(True)
+            spin.setValue(0)
+            spin.blockSignals(False)
         if self.hil:
             self._guarded(lambda: self.hil.set_out(n, on))
 
@@ -267,6 +290,13 @@ class MicroHILWindow(QMainWindow):
     def _set_aout(self, n: int, mv: int) -> None:
         if self.hil:
             self._guarded(lambda: self.hil.set_aout_mv(n, mv))
+
+    def _set_pwm(self, n: int, permille: int) -> None:
+        if permille > 0:
+            # Verriegelt mit OUT n auf der Firmware, hier nur die Anzeige nachziehen
+            self.out_buttons[n - 1].set_checked_silently(False)
+        if self.hil:
+            self._guarded(lambda: self.hil.set_pwm(n, permille))
 
     # -------------------------------------------------------------- Polling
 

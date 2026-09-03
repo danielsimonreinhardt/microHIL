@@ -78,3 +78,10 @@ class MicroHIL:
     def get_curr_mv(self, n: int) -> int:
         """Rohe Sense-Spannung in mV (noch keine mA-Umrechnung, siehe docs/protocol.md)."""
         return int(self._command(f"CURR? {n}"))
+
+    def set_pwm(self, n: int, duty_permille: int) -> None:
+        """PWM-Kanal 1-4 (PC6-9). Verriegelt mit OUT 1-4 (siehe docs/protocol.md)."""
+        self._command(f"PWM {n} {duty_permille}")
+
+    def get_pwm(self, n: int) -> int:
+        return int(self._command(f"PWM? {n}"))

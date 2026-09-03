@@ -18,9 +18,22 @@ einen Wert). Werte sind immer Ganzzahlen in mV/mA, nie Fließkomma.
 | `PWR12 <1-2> <0\|1>` | `PWR12 1 1` | `OK` |
 | `PWR12? <1-2>` | `PWR12? 1` | `1` |
 | `CURR? <1-2>` | `CURR? 1` | `536` |
+| `PWM <1-4> <0-1000>` | `PWM 1 500` | `OK` |
+| `PWM? <1-4>` | `PWM? 1` | `500` |
+
+`PWM`-Duty-Cycle in Promille (0 = aus, 1000 = 100%).
 
 Bei ungültigen/unbekannten Kommandos: `ERR <Grund>` (z. B. `ERR RANGE`,
 `ERR ARGS`, `ERR UNKNOWN`).
+
+## Verriegelung PWM1-4 / OUT1-4
+
+PC6-PC9 (PWM1-4, TIM3) und OUT1-4 (PA10/PA15/PC10/PC11) treiben laut
+Schaltplan dieselbe Endstufe und dürfen nie gleichzeitig aktiv sein.
+Firmwareseitig erzwungen: `OUT <n> 1` (n=1-4) stoppt PWM-Kanal n zwangsweise
+(Duty auf 0), `PWM <n> <>0>` schaltet OUT n zwangsweise ab. Es gibt dafür
+keine eigene Fehlermeldung — die Verriegelung wirkt still, der jeweils
+andere Kanal wird einfach deaktiviert.
 
 ## Bekannte Lücke
 
