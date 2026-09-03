@@ -214,4 +214,18 @@ void OTG_FS_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
+/* CAN1-Interrupts: bewusst hier statt ueber den NVIC-Tab der .ioc, damit ein
+ * Regenerieren aus CubeMX die CAN-Anbindung nicht zerlegt (siehe can_if.c). */
+extern CAN_HandleTypeDef hcan1;
+
+void CAN1_RX0_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan1);
+}
+
+void CAN1_SCE_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan1);
+}
+
 /* USER CODE END 1 */

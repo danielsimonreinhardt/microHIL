@@ -46,6 +46,8 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Core/Src/protocol.c
+    Core/Src/can_if.c
+    Core/Src/slcan.c
 )
 
 # Add include paths

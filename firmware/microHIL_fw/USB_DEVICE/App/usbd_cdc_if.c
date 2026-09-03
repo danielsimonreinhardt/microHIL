@@ -24,6 +24,7 @@
 /* USER CODE BEGIN INCLUDE */
 #include "main.h"
 #include "protocol.h"
+#include "slcan.h"
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,6 +33,76 @@
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
+
+/* ---- PROVISORIUM (entfaellt mit dem Composite-Device / Phase 3) ----
+ * Solange beide Protokolle auf demselben COM-Port liegen, wird jede
+ * eingehende Zeile anhand ihres Inhalts einsortiert. Zuverlaessig, weil sich
+ * die beiden Kommandosaetze nicht ueberschneiden: HIL-Kommandos enthalten
+ * immer ein Leerzeichen, '?' oder '*' (RELAY 1 1, IN?, *IDN?), SLCAN-
+ * Kommandos bestehen nur aus einem Buchstaben plus Hex-/Dezimalziffern.
+ * Am Zeilenende wird nicht unterschieden - sonst wuerde ein HIL-Kommando
+ * mit CRLF faelschlich beim SLCAN-Parser landen. */
+#define CDC_SEG_MAX 80
+static uint8_t cdc_seg[CDC_SEG_MAX];
+static uint16_t cdc_seg_len = 0;
+
+static void CDC_DispatchSegment(void)
+{
+  uint16_t i;
+  uint8_t is_hil = 0;
+
+  if (cdc_seg_len == 0U)
+  {
+    return; /* z. B. das '\n' eines CRLF-Paars */
+  }
+
+  for (i = 0; i < cdc_seg_len; i++)
+  {
+    if (cdc_seg[i] == ' ' || cdc_seg[i] == '\t' ||
+        cdc_seg[i] == '?' || cdc_seg[i] == '*')
+    {
+      is_hil = 1;
+      break;
+    }
+  }
+
+  if (is_hil)
+  {
+    cdc_seg[cdc_seg_len] = '\n';
+    Protocol_RxChunk(cdc_seg, (uint32_t)cdc_seg_len + 1U);
+  }
+  else
+  {
+    cdc_seg[cdc_seg_len] = '\r';
+    Slcan_RxChunk(cdc_seg, (uint32_t)cdc_seg_len + 1U);
+  }
+
+  cdc_seg_len = 0;
+}
+
+static void CDC_DispatchRx(uint8_t *buf, uint32_t len)
+{
+  uint32_t i;
+
+  for (i = 0; i < len; i++)
+  {
+    uint8_t c = buf[i];
+
+    if (c == '\r' || c == '\n')
+    {
+      CDC_DispatchSegment();
+      continue;
+    }
+
+    if (cdc_seg_len < (CDC_SEG_MAX - 1U))
+    {
+      cdc_seg[cdc_seg_len++] = c;
+    }
+    /* Ueberlange Zeile: Rest verwerfen, beide Parser melden ihren Fehler
+     * ohnehin erst beim Terminator. */
+  }
+}
+/* ---- Ende Provisorium ---- */
 
 /* USER CODE END PV */
 
@@ -264,7 +335,7 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
   /* USER CODE BEGIN 6 */
   HAL_GPIO_TogglePin(DEBUG_LED_1_GPIO_Port, DEBUG_LED_1_Pin);
 
-  Protocol_RxChunk(Buf, *Len);
+  CDC_DispatchRx(Buf, *Len);
 
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
@@ -296,6 +367,16 @@ uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len)
   /* USER CODE END 7 */
   return result;
 }
+
+/* USER CODE BEGIN PRIVATE_FUNCTIONS_IMPLEMENTATION */
+/* Ausgabekanal des SLCAN-Layers. Bis zum Composite-Device teilt er sich den
+ * Port mit dem HIL-Protokoll; danach zeigt diese Funktion auf die zweite
+ * CDC-Instanz und sonst aendert sich nichts. */
+uint8_t Slcan_UsbTransmit(uint8_t *buf, uint16_t len)
+{
+  return CDC_Transmit_FS(buf, len);
+}
+/* USER CODE END PRIVATE_FUNCTIONS_IMPLEMENTATION */
 
 /**
   * @brief  CDC_TransmitCplt_FS

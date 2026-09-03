@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "protocol.h"
+#include "slcan.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -118,6 +119,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     Protocol_Poll();
+    Slcan_Poll();
   }
   /* USER CODE END 3 */
 }

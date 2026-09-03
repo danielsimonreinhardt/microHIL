@@ -13,3 +13,7 @@
 - Test-GUI (`host/gui.py`, PySide6) zum manuellen Durchtesten aller Funktionen
 - Fix: AOUT1/AOUT2-Zuordnung war vertauscht (PA4/PA5-Labels in CubeMX korrigiert, `dac_channel[]` in `protocol.c` entsprechend angepasst)
 - PWM-Kanäle PWM1-4 (PC6-9, TIM3) im Protokoll ergänzt, softwareseitig gegen OUT1-4 verriegelt (dieselbe Endstufe laut Schaltplan) — **noch nicht auf Hardware getestet**, ST-Link war beim Umsetzen getrennt. Build erfolgreich, GUI-Konstruktion geprüft.
+- CAN1 als CAN-USB-Interface im SLCAN-/Lawicel-Format (`Core/Src/can_if.c`, `Core/Src/slcan.c`), nutzbar mit `python-can` (`interface="slcan"`) und unter Linux via `slcand` als SocketCAN-Interface — **noch nicht auf Hardware getestet**
+  - bxCAN-Treiber mit Interrupt-RX (64-Frame-Ring), Accept-all-Filter, automatischer Bus-Off-Erholung und SLCAN-Fehlerflags; Bit-Timing wird zur Laufzeit gesucht statt in CubeMX hinterlegt, damit ein Regenerieren des `.ioc` die CAN-Anbindung nicht zerlegt
+  - Filterbank-Split gesetzt (`SlaveStartFilterBank = 14`), damit CAN2 später überhaupt empfangen kann
+  - Zusatzkommandos über CAN232 hinaus: `B<bit/s>` für krumme Bitraten (u. a. 750 kbit/s, das `python-can` fälschlich auf `S7` mappt) und `Y` für Loopback-Selbsttest ohne Bus
