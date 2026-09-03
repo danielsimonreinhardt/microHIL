@@ -1,4 +1,5 @@
 """Python-Client fuer das microHIL-Kommandoprotokoll (USB-CDC)."""
+import re
 import sys
 
 import serial
@@ -7,16 +8,104 @@ import serial.tools.list_ports
 VID = 0x0483
 PID = 0x5740
 
+# microHIL meldet sich als Composite-Device mit zwei CDC-ACM-Funktionen. Beide
+# COM-Ports haben dieselbe VID/PID, unterscheidbar sind sie nur ueber die
+# Interface-Nummer: 0 = HIL-Kommandoprotokoll, 2 = CAN1 (SLCAN).
+# Der Composite-Builder der ST-Library vergibt keine Interface-Namen, deshalb
+# geht das nur ueber die hwid. Siehe docs/can-usb.md.
+IFACE_CTRL = 0
+IFACE_CAN = 2
+
 
 class MicroHILError(RuntimeError):
     pass
 
 
-def find_port() -> str:
-    for port in serial.tools.list_ports.comports():
-        if port.vid == VID and port.pid == PID:
-            return port.device
-    sys.exit("microHIL nicht gefunden (VID:PID 0483:5740). port= manuell angeben.")
+def _interface_number(port) -> int | None:
+    """Interface-Nummer eines Composite-Ports, plattformuebergreifend.
+
+    pyserial legt die Nummer je nach Plattform und Version an verschiedenen
+    Stellen ab, deshalb werden mehrere Schreibweisen probiert:
+      * `location` bzw. `LOCATION=` in der hwid: `1-3:1.2` -> 2
+      * Windows-Geraetepfad: `...&MI_02\\...`
+      * Linux by-id-Pfad: `...-if02`
+    """
+    hwid = getattr(port, "hwid", "") or ""
+
+    m = re.search(r"MI_([0-9A-Fa-f]+)", hwid)
+    if m:
+        return int(m.group(1), 16)
+
+    for cand in (getattr(port, "device", "") or "", hwid):
+        m = re.search(r"-if([0-9A-Fa-f]+)", cand)
+        if m:
+            return int(m.group(1), 16)
+
+    location = getattr(port, "location", None) or ""
+    if not location:
+        m = re.search(r"LOCATION=(\S+)", hwid)
+        if m:
+            location = m.group(1)
+    m = re.search(r"[:.](\d+)$", location)
+    if m:
+        return int(m.group(1))
+
+    return None
+
+
+def _natural_key(device: str):
+    """COM9 vor COM10 sortieren (rein lexikalisch waere es umgekehrt)."""
+    return [int(part) if part.isdigit() else part
+            for part in re.split(r"(\d+)", device)]
+
+
+def find_ports() -> dict[int, str]:
+    """Alle microHIL-Ports als {Interface-Nummer: Geraetename}.
+
+    Bei der alten Ein-Port-Firmware gibt es genau einen Port ohne
+    Interface-Nummer; der wird als Steuerport gewertet.
+    """
+    matches = [p for p in serial.tools.list_ports.comports()
+               if p.vid == VID and p.pid == PID]
+
+    found: dict[int, str] = {}
+    unknown = []
+    for port in matches:
+        iface = _interface_number(port)
+        if iface is None:
+            unknown.append(port.device)
+        else:
+            found[iface] = port.device
+
+    if unknown:
+        if len(matches) == 1:
+            found[IFACE_CTRL] = unknown[0]
+        else:
+            # Letzter Ausweg, wenn die Plattform keine Interface-Nummer
+            # herausrueckt: die Ports enumerieren in Interface-Reihenfolge,
+            # der niedrigere ist also der Steuerport.
+            for slot, device in zip((IFACE_CTRL, IFACE_CAN),
+                                    sorted(unknown, key=_natural_key)):
+                found.setdefault(slot, device)
+
+    return found
+
+
+def find_port(interface: int = IFACE_CTRL) -> str:
+    ports = find_ports()
+    if interface in ports:
+        return ports[interface]
+    if not ports:
+        sys.exit("microHIL nicht gefunden (VID:PID 0483:5740). port= manuell angeben.")
+    sys.exit(
+        f"microHIL-Interface {interface} nicht gefunden. Gefunden: {ports}. "
+        "Firmware mit Composite-USB geflasht? port= manuell angeben."
+    )
+
+
+def find_can_port() -> str:
+    """COM-Port des CAN1-Interfaces (SLCAN)."""
+    return find_port(IFACE_CAN)
 
 
 class MicroHIL:

@@ -1,28 +1,42 @@
 """Test-GUI fuer microHIL: alle Protokollfunktionen manuell ansteuern."""
 import sys
 
+import can
 import serial.tools.list_ports
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QStatusBar,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from microhil import VID, PID, MicroHIL, MicroHILError
+from microhil import VID, PID, IFACE_CTRL, MicroHIL, MicroHILError, find_ports
+from microhil_can import open_can
 
 POLL_INTERVAL_MS = 500
+# CAN-Frames kommen unaufgefordert; bei 500 ms Takt wuerde die Trace-Ansicht
+# sichtbar hinterherhinken.
+CAN_POLL_INTERVAL_MS = 50
+CAN_DRAIN_PER_TICK = 200
+CAN_TRACE_LINES = 500
+
+CAN_BITRATES = [10000, 20000, 50000, 83333, 100000, 125000,
+                250000, 500000, 800000, 1000000]
 
 
 def toggle_style(on: bool) -> str:
@@ -59,6 +73,10 @@ class MicroHILWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("microHIL Test-GUI")
         self.hil: MicroHIL | None = None
+        # CAN haengt am zweiten COM-Port und ist unabhaengig von der
+        # HIL-Verbindung -- beides laeuft absichtlich gleichzeitig.
+        self.can_bus: can.BusABC | None = None
+        self.can_rx_count = 0
 
         self.din_labels: list[QLabel] = []
         self.ain_labels: list[QLabel] = []
@@ -75,8 +93,18 @@ class MicroHILWindow(QMainWindow):
         self.poll_timer.setInterval(POLL_INTERVAL_MS)
         self.poll_timer.timeout.connect(self._poll_inputs)
 
+        self.can_timer = QTimer(self)
+        self.can_timer.setInterval(CAN_POLL_INTERVAL_MS)
+        self.can_timer.timeout.connect(self._poll_can)
+
         self._set_controls_enabled(False)
         self._refresh_ports()
+
+    def closeEvent(self, event) -> None:
+        self._close_can()
+        if self.hil is not None:
+            self._disconnect()
+        super().closeEvent(event)
 
     # ---------------------------------------------------------------- UI
 
@@ -87,19 +115,32 @@ class MicroHILWindow(QMainWindow):
 
         root.addWidget(self._build_connection_box())
 
+        # Zwei Reiter, weil HIL-Funktionen und CAN-Trace unabhaengig
+        # voneinander benutzt werden -- sie haengen auch an zwei getrennten
+        # COM-Ports des Composite-Device.
+        tabs = QTabWidget()
+        tabs.addTab(self._build_hil_tab(), "HIL")
+        tabs.addTab(self._build_can_tab(), "CAN1")
+        root.addWidget(tabs)
+
+    def _build_hil_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
         row = QHBoxLayout()
         row.addWidget(self._build_relay_box())
         row.addWidget(self._build_out_box())
         row.addWidget(self._build_in_box())
-        root.addLayout(row)
+        layout.addLayout(row)
 
         row2 = QHBoxLayout()
         row2.addWidget(self._build_aout_box())
         row2.addWidget(self._build_ain_box())
         row2.addWidget(self._build_pwr12_box())
-        root.addLayout(row2)
+        layout.addLayout(row2)
 
-        root.addWidget(self._build_pwm_box())
+        layout.addWidget(self._build_pwm_box())
+        return page
 
     def _build_connection_box(self) -> QGroupBox:
         box = QGroupBox("Verbindung")
@@ -207,16 +248,186 @@ class MicroHILWindow(QMainWindow):
             self.pwm_spins.append(spin)
         return box
 
+    # -------------------------------------------------------------- CAN1
+
+    def _build_can_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        ctrl = QGroupBox("Bus")
+        ctrl_layout = QHBoxLayout(ctrl)
+
+        ctrl_layout.addWidget(QLabel("Bitrate"))
+        self.can_bitrate_combo = QComboBox()
+        for br in CAN_BITRATES:
+            self.can_bitrate_combo.addItem(f"{br / 1000:g} kbit/s", br)
+        self.can_bitrate_combo.setCurrentIndex(CAN_BITRATES.index(500000))
+        ctrl_layout.addWidget(self.can_bitrate_combo)
+
+        self.can_listen_check = QCheckBox("nur mithören")
+        self.can_listen_check.setToolTip(
+            "Listen-Only: der Controller sendet keine Bits, auch keine ACKs."
+        )
+        ctrl_layout.addWidget(self.can_listen_check)
+
+        self.can_open_btn = QPushButton("CAN öffnen")
+        self.can_open_btn.clicked.connect(self._toggle_can)
+        ctrl_layout.addWidget(self.can_open_btn)
+
+        self.can_status_label = QLabel("geschlossen")
+        ctrl_layout.addWidget(self.can_status_label)
+        ctrl_layout.addStretch()
+        layout.addWidget(ctrl)
+
+        send = QGroupBox("Senden")
+        send_layout = QHBoxLayout(send)
+        send_layout.addWidget(QLabel("ID (hex)"))
+        self.can_id_edit = QLineEdit("7DF")
+        self.can_id_edit.setMaximumWidth(90)
+        send_layout.addWidget(self.can_id_edit)
+
+        self.can_ext_check = QCheckBox("29 bit")
+        send_layout.addWidget(self.can_ext_check)
+        self.can_rtr_check = QCheckBox("RTR")
+        send_layout.addWidget(self.can_rtr_check)
+
+        send_layout.addWidget(QLabel("Daten (hex)"))
+        self.can_data_edit = QLineEdit("02 01 00")
+        send_layout.addWidget(self.can_data_edit)
+
+        self.can_send_btn = QPushButton("Senden")
+        self.can_send_btn.clicked.connect(self._send_can_frame)
+        send_layout.addWidget(self.can_send_btn)
+        layout.addWidget(send)
+
+        trace = QGroupBox("Trace")
+        trace_layout = QVBoxLayout(trace)
+        self.can_trace = QPlainTextEdit()
+        self.can_trace.setReadOnly(True)
+        self.can_trace.setMaximumBlockCount(CAN_TRACE_LINES)
+        self.can_trace.setStyleSheet("font-family: Consolas, monospace;")
+        trace_layout.addWidget(self.can_trace)
+
+        trace_buttons = QHBoxLayout()
+        clear_btn = QPushButton("Leeren")
+        clear_btn.clicked.connect(self.can_trace.clear)
+        trace_buttons.addWidget(clear_btn)
+        self.can_count_label = QLabel("0 Frames")
+        trace_buttons.addWidget(self.can_count_label)
+        trace_buttons.addStretch()
+        trace_layout.addLayout(trace_buttons)
+        layout.addWidget(trace)
+
+        self._set_can_controls_enabled(False)
+        return page
+
+    def _set_can_controls_enabled(self, open_: bool) -> None:
+        self.can_send_btn.setEnabled(open_)
+        self.can_bitrate_combo.setEnabled(not open_)
+        self.can_listen_check.setEnabled(not open_)
+
+    def _toggle_can(self) -> None:
+        if self.can_bus is None:
+            self._open_can()
+        else:
+            self._close_can()
+
+    def _open_can(self) -> None:
+        bitrate = self.can_bitrate_combo.currentData()
+        listen_only = self.can_listen_check.isChecked()
+        try:
+            self.can_bus = open_can(bitrate, listen_only=listen_only)
+        except (can.CanError, OSError, RuntimeError, ValueError, SystemExit) as exc:
+            QMessageBox.critical(self, "microHIL CAN1", f"CAN öffnen fehlgeschlagen:\n{exc}")
+            self.can_bus = None
+            return
+
+        self.can_rx_count = 0
+        self.can_status_label.setText(
+            f"offen, {bitrate / 1000:g} kbit/s" + (", listen-only" if listen_only else "")
+        )
+        self.can_open_btn.setText("CAN schließen")
+        self._set_can_controls_enabled(True)
+        self.can_timer.start()
+
+    def _close_can(self) -> None:
+        self.can_timer.stop()
+        if self.can_bus is not None:
+            try:
+                self.can_bus.shutdown()
+            except (can.CanError, OSError):
+                pass
+            self.can_bus = None
+        self.can_status_label.setText("geschlossen")
+        self.can_open_btn.setText("CAN öffnen")
+        self._set_can_controls_enabled(False)
+
+    def _send_can_frame(self) -> None:
+        if self.can_bus is None:
+            return
+        try:
+            can_id = int(self.can_id_edit.text().strip(), 16)
+            data = bytes.fromhex(self.can_data_edit.text().replace(" ", ""))
+        except ValueError as exc:
+            self.statusBar().showMessage(f"Ungültige Eingabe: {exc}", 5000)
+            return
+        if len(data) > 8:
+            self.statusBar().showMessage("Höchstens 8 Datenbytes", 5000)
+            return
+
+        msg = can.Message(
+            arbitration_id=can_id,
+            is_extended_id=self.can_ext_check.isChecked(),
+            is_remote_frame=self.can_rtr_check.isChecked(),
+            data=data,
+        )
+        try:
+            self.can_bus.send(msg)
+        except (can.CanError, OSError) as exc:
+            self.statusBar().showMessage(f"CAN-Sendefehler: {exc}", 5000)
+            return
+        self.can_trace.appendPlainText(f"TX  {self._format_frame(msg)}")
+
+    @staticmethod
+    def _format_frame(msg: can.Message) -> str:
+        ident = f"{msg.arbitration_id:08X}" if msg.is_extended_id else f"{msg.arbitration_id:03X}"
+        if msg.is_remote_frame:
+            payload = f"RTR dlc={msg.dlc}"
+        else:
+            payload = " ".join(f"{b:02X}" for b in msg.data)
+        return f"{ident:>8}  [{msg.dlc}]  {payload}"
+
+    def _poll_can(self) -> None:
+        if self.can_bus is None:
+            return
+        try:
+            for _ in range(CAN_DRAIN_PER_TICK):
+                msg = self.can_bus.recv(0)
+                if msg is None:
+                    break
+                self.can_rx_count += 1
+                self.can_trace.appendPlainText(f"RX  {self._format_frame(msg)}")
+        except (can.CanError, OSError) as exc:
+            self.statusBar().showMessage(f"CAN-Fehler: {exc}", 5000)
+            self._close_can()
+            return
+        self.can_count_label.setText(f"{self.can_rx_count} Frames")
+
     # --------------------------------------------------------- Verbindung
 
     def _refresh_ports(self) -> None:
         self.port_combo.clear()
+        # Seit dem Composite-Device meldet microHIL zwei Ports mit derselben
+        # VID/PID. Der Steuerport (Interface 0) muss vorausgewaehlt werden,
+        # sonst landet die GUI auf dem CAN-Port.
+        ctrl_port = find_ports().get(IFACE_CTRL)
         preferred_index = 0
         for i, p in enumerate(serial.tools.list_ports.comports()):
             label = p.device
             if p.vid == VID and p.pid == PID:
-                label += "  (microHIL)"
-                preferred_index = i
+                label += "  (microHIL CAN1)" if p.device != ctrl_port else "  (microHIL)"
+                if p.device == ctrl_port:
+                    preferred_index = i
             self.port_combo.addItem(label, p.device)
         self.port_combo.setCurrentIndex(preferred_index)
 

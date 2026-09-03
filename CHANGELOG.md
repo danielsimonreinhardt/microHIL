@@ -17,3 +17,12 @@
   - bxCAN-Treiber mit Interrupt-RX (64-Frame-Ring), Accept-all-Filter, automatischer Bus-Off-Erholung und SLCAN-Fehlerflags; Bit-Timing wird zur Laufzeit gesucht statt in CubeMX hinterlegt, damit ein Regenerieren des `.ioc` die CAN-Anbindung nicht zerlegt
   - Filterbank-Split gesetzt (`SlaveStartFilterBank = 14`), damit CAN2 später überhaupt empfangen kann
   - Zusatzkommandos über CAN232 hinaus: `B<bit/s>` für krumme Bitraten (u. a. 750 kbit/s, das `python-can` fälschlich auf `S7` mappt) und `Y` für Loopback-Selbsttest ohne Bus
+  - Referenz in `docs/can-usb.md`
+- USB-Composite-Device mit zwei CDC-ACM-Funktionen (zwei virtuelle COM-Ports): Port 1 = HIL-Kommandoprotokoll, Port 2 = CAN1 — beide gleichzeitig nutzbar, weil sich ein COM-Port unter Windows nur einmal öffnen lässt — **noch nicht auf Hardware getestet**
+  - CompositeBuilder der ST-USB-Library aus dem passenden Cube-FW-Paket (F4 V1.28.3) ergänzt, CubeMX generiert das für die F4-Serie nicht selbst
+  - FIFO-Aufteilung von OTG_FS neu vergeben (fünf TX-FIFOs statt zwei), Endpunktadressen fest zugeordnet
+  - Gerätestrings auf `microHIL` geändert (vorher `STM32 Virtual ComPort`)
+- Host: `host/microhil_can.py` (python-can-Wrapper), `find_ports()`/`find_can_port()` in `host/microhil.py` zum Auseinanderhalten der beiden Ports, CAN-Reiter in `host/gui.py` mit Trace und Sendefeld, `python-can` in den Requirements
+- Roadmap im README ergänzt, u. a. CAN2 als geplante Fernsteuer-Schnittstelle für microHIL
+- Prüfskripte ohne Hardware in `host/tests/`: Bit-Timing gegen die bxCAN-Registergrenzen, SLCAN-Drahtformat in beiden Richtungen gegen den echten `python-can`-Treiber
+- `host/test_echo.py` entfernt (Altlast aus der Bring-up-Phase, erwartete ein rohes Echo, das die Firmware seit dem Kommandoprotokoll nicht mehr liefert)

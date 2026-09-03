@@ -390,6 +390,11 @@ static void handle_cmd(const char *s, uint8_t len)
       reply_err();
       return;
     }
+    /* Vorher schliessen macht das Oeffnen idempotent. python-can schickt
+     * beim Verbinden zweimal 'O' (einmal aus set_bitrate(), einmal aus
+     * __init__); ein BEL auf das zweite wuerde nur den Empfangspuffer des
+     * Hosts verschmutzen. */
+    CanIf_Close();
     if (CanIf_Open(s[0] == 'L' ? CANIF_MODE_LISTEN
                                : (s[0] == 'Y' ? CANIF_MODE_LOOPBACK
                                               : CANIF_MODE_NORMAL)) != 0)

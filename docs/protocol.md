@@ -4,6 +4,11 @@ ASCII-Zeilenprotokoll, `\n`-terminiert (`\r\n` wird ebenfalls akzeptiert),
 115200 Baud (wird vom virtuellen COM-Port ignoriert, aber pyserial verlangt
 einen Wert). Werte sind immer Ganzzahlen in mV/mA, nie Fließkomma.
 
+microHIL meldet zwei virtuelle COM-Ports. Dieses Protokoll liegt auf dem
+**ersten** (Interface 0, Windows `MI_00`, Linux `-if00`); auf dem zweiten
+liegt CAN1 als SLCAN-Interface, siehe [can-usb.md](can-usb.md). Den richtigen
+Port findet `host/microhil.py` selbst (`find_port()`).
+
 | Befehl | Beispiel | Antwort |
 |---|---|---|
 | `*IDN?` | `*IDN?` | `microHIL,fw=0.1.0` |
