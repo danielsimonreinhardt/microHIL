@@ -28,3 +28,4 @@
 - Roadmap im README ergänzt, u. a. CAN2 als geplante Fernsteuer-Schnittstelle für microHIL
 - Prüfskripte ohne Hardware in `host/tests/`: Bit-Timing gegen die bxCAN-Registergrenzen, SLCAN-Drahtformat in beiden Richtungen gegen den echten `python-can`-Treiber
 - `host/test_echo.py` entfernt (Altlast aus der Bring-up-Phase, erwartete ein rohes Echo, das die Firmware seit dem Kommandoprotokoll nicht mehr liefert)
+- `docs/protocol.md` präzisiert (Grundlage für einen künftigen LabControl-Treiber): Antwort-Terminator `\r\n`, Case-Sensitivität/Trennzeichen, Verhalten bei Leerzeile, VID:PID, ADC-Timing bei `AIN?`/`CURR?` — vor allem aber die bisher undokumentierte Asymmetrie, dass `AOUT`/`PWM` nur den Kanalindex mit `ERR RANGE` prüfen, den Nutzwert selbst aber still auf den gültigen Bereich klemmen statt abzulehnen

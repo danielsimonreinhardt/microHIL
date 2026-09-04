@@ -1,13 +1,26 @@
 # microHIL-Kommandoprotokoll (USB-CDC)
 
-ASCII-Zeilenprotokoll, `\n`-terminiert (`\r\n` wird ebenfalls akzeptiert),
-115200 Baud (wird vom virtuellen COM-Port ignoriert, aber pyserial verlangt
-einen Wert). Werte sind immer Ganzzahlen in mV/mA, nie Fließkomma.
+ASCII-Zeilenprotokoll. **Anfragen** sind `\n`-terminiert (`\r\n` wird
+ebenfalls akzeptiert), 115200 Baud (wird vom virtuellen COM-Port ignoriert,
+aber pyserial verlangt einen Wert). **Antworten** enden immer mit `\r\n` —
+auch `OK` und `ERR ...` — ein simples `readline()` reicht also zum Auslesen.
+Werte sind immer Ganzzahlen in mV/mA, nie Fließkomma.
 
-microHIL meldet zwei virtuelle COM-Ports. Dieses Protokoll liegt auf dem
-**ersten** (Interface 0, Windows `MI_00`, Linux `-if00`); auf dem zweiten
-liegt CAN1 als SLCAN-Interface, siehe [can-usb.md](can-usb.md). Den richtigen
-Port findet `host/microhil.py` selbst (`find_port()`).
+Kommandos sind **case-sensitiv, nur Großschreibung** (`RELAY`, nicht
+`relay`), Verb und Argumente durch Leerzeichen oder Tab getrennt
+(`strtok(line, " \t")` — mehrere Trenner hintereinander sind unproblematisch).
+Eine **leere Zeile erzeugt keine Antwort** (weder `OK` noch `ERR`) — ein
+Treiber, der eine Leerzeile schickt, würde sonst in den Timeout laufen statt
+einen Fehler zu sehen.
+
+**USB-Identifikation:** VID:PID `0483:5740` (ST-Werks-VCP-IDs, kein eigenes
+USB-Zertifikat). microHIL meldet zwei virtuelle COM-Ports mit dieser
+VID:PID. Dieses Protokoll liegt auf dem **ersten** (Interface 0, Windows
+`MI_00`, Linux `-if00`); auf dem zweiten liegt CAN1 als SLCAN-Interface,
+siehe [can-usb.md](can-usb.md). Den richtigen Port findet `host/microhil.py`
+selbst (`find_port()`) — die Interface-Nummer ist bei zwei gleichzeitig
+sichtbaren Ports mit identischer VID:PID das einzig verlässliche
+Unterscheidungsmerkmal, siehe dort für die Details je Plattform.
 
 | Befehl | Beispiel | Antwort |
 |---|---|---|
@@ -28,17 +41,54 @@ Port findet `host/microhil.py` selbst (`find_port()`).
 
 `PWM`-Duty-Cycle in Promille (0 = aus, 1000 = 100%).
 
-Bei ungültigen/unbekannten Kommandos: `ERR <Grund>` (z. B. `ERR RANGE`,
-`ERR ARGS`, `ERR UNKNOWN`).
+Bei ungültigen/unbekannten Kommandos: `ERR <Grund>`. Es gibt genau drei
+Gründe, keine weiteren:
+
+| Grund | Bedeutung |
+|---|---|
+| `ERR ARGS` | Argument fehlt (z. B. `RELAY 1` ohne Zustand) |
+| `ERR RANGE` | **Kanal-/Indexargument** außerhalb des gültigen Bereichs (z. B. `RELAY 5 1`) |
+| `ERR UNKNOWN` | Kommando-Verb nicht erkannt |
+
+## Wertebereiche: Index vs. Nutzwert
+
+Wichtige Asymmetrie, die sich nicht aus der Tabelle oben ableiten lässt:
+**nur das Kanal-/Indexargument wird geprüft und liefert `ERR RANGE`.** Das
+eigentliche Nutzwertargument (mV bei `AOUT`, Promille bei `PWM`) wird **ohne
+Fehlermeldung auf den gültigen Bereich geklemmt**, nicht abgelehnt:
+
+- `AOUT <1-2> <mV>`: mV wird auf `0..3300` geklemmt (DAC-Referenz).
+  `AOUT 1 99999` antwortet `OK`, setzt aber effektiv 3300 mV — der Aufrufer
+  erfährt aus der Antwort nicht, dass der Wert verändert wurde.
+- `PWM <1-4> <permille>`: Promille wird auf `0..1000` geklemmt. `PWM 1 -5`
+  antwortet `OK` und setzt effektiv 0.
+
+Für einen Treiber heißt das: `OK` bei `AOUT`/`PWM` bestätigt nur, dass der
+Kanalindex gültig war — **nicht**, dass der genaue angeforderte Wert übernommen
+wurde. Wer das prüfen will, muss den Wert per `AOUT?`/`PWM?`
+zurücklesen (Anmerkung: `AOUT?` existiert nicht, nur `PWM?`).
+
+`RELAY`/`OUT`/`PWR12` erwarten `0`/`1`, akzeptieren aber jeden Ganzzahlwert
+(`atoi`) — jeder Wert ungleich `0` wird als `1` (ein) gewertet, es gibt keine
+eigene Prüfung auf exakt `0`/`1`.
 
 ## Verriegelung PWM1-4 / OUT1-4
 
 PC6-PC9 (PWM1-4, TIM3) und OUT1-4 (PA10/PA15/PC10/PC11) treiben laut
 Schaltplan dieselbe Endstufe und dürfen nie gleichzeitig aktiv sein.
 Firmwareseitig erzwungen: `OUT <n> 1` (n=1-4) stoppt PWM-Kanal n zwangsweise
-(Duty auf 0), `PWM <n> <>0>` schaltet OUT n zwangsweise ab. Es gibt dafür
-keine eigene Fehlermeldung — die Verriegelung wirkt still, der jeweils
-andere Kanal wird einfach deaktiviert.
+(Duty auf 0), `PWM <n> <permille>` mit `permille > 0` schaltet OUT n
+zwangsweise ab. Es gibt dafür keine eigene Fehlermeldung — die Verriegelung
+wirkt still, der jeweils andere Kanal wird einfach deaktiviert.
+
+## Timing
+
+Alle Kommandos außer `AIN?` und `CURR?` antworten praktisch sofort
+(reine GPIO-/Register-Operationen). `AIN?` und `CURR?` lösen intern eine
+Single-Conversion-ADC-Messung aus (`HAL_ADC_PollForConversion`, 10 ms
+Timeout) — im Normalfall deutlich schneller, aber ein Treiber, der viele
+Analogkanäle im Poll-Takt abfragt, sollte pro Aufruf mit bis zu ~10 ms
+rechnen statt mit der sonst üblichen Sub-Millisekunden-Antwortzeit.
 
 ## Bekannte Lücke
 
