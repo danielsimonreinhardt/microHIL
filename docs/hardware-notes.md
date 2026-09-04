@@ -41,19 +41,20 @@ sondern floatet** — es zieht nichts Definiertes dagegen. `CAN1_SILENT` (PB7)
 umzuschalten (LOW↔HIGH) hat dabei **keinerlei Auswirkung** auf PB8, was eine
 einfache Polaritätsverwechslung beim Silent-Pin als Ursache ausschließt.
 
-Naheliegende Erklärungen, noch nicht am Bauteil verifiziert:
-- Transceiver für CAN1 nicht bestückt (widerspricht der bisherigen Annahme)
-- Transceiver bestückt, aber ohne Versorgung (VCC-Rail nicht angeschlossen)
-- `CAN1_SILENT` steuert einen anderen Pin/eine andere Funktion als angenommen
-- RXD-Leitung zwischen Transceiver und PB8 nicht durchverbunden
+**Root Cause (gefunden):** Defekter CAN-Transceiver. Direktes Nachmessen am
+RXD-Pin des Transceiver-ICs zeigte ca. 0,2 V statt der erwarteten ~5 V
+(rezessiver Ruhepegel) — der Transceiver selbst hat die Leitung nicht
+korrekt auf HIGH getrieben, unabhängig von MCU-Seite oder Verdrahtung.
+Zwei Zwischenschritte haben das nicht behoben und sind damit als Ursache
+ausgeschlossen: kalte Lötstellen (nachgelötet, kein Effekt) und
+Silent-Pin-Polarität (siehe oben, PB7-Umschalten ohne Wirkung auf PB8).
 
-**Workaround (aktuell):** keiner — CAN1 lässt sich derzeit nicht scharf
-schalten. Der Loopback-Selbsttest (`Y`) ist als Bring-up-Werkzeug vorgesehen,
-scheitert hier aber am selben Pin-Sync-Mechanismus wie der echte Bus.
+**Fix:** Transceiver getauscht. Nach dem Tausch: `O`, `L` und `Y` öffnen
+alle sauber (`OK`, keine Statusflags), Loopback-Frames (Standard, Extended,
+beide RTR-Varianten, 1 Mbit/s) laufen fehlerfrei durch, Parallelbetrieb mit
+dem HIL-Port über 5 Runden ohne Aussetzer. Damit ist CAN1 als CAN-USB-
+Interface funktionsfähig.
 
-**Nächster Schritt:** Bestückung/Verdrahtung von CAN1 am Bauteil prüfen
-(Transceiver vorhanden? Versorgt? RXD auf PB8 durchverbunden?). Falls die
-Platine tatsächlich unbestückt ist, wäre ein interner Pull-Up auf PB8
-firmwareseitig trotzdem sinnvoll (übliche Fail-Safe-Praxis für CAN-RX-Leitungen
-bei fehlendem/getrenntem Transceiver), löst aber nicht den eigentlichen
-Busbetrieb.
+**Noch offen:** Test gegen einen echten zweiten Busteilnehmer (bisher nur
+Loopback/Selbsttest verifiziert) und Bitraten-Messung am Oszilloskop gegen
+die berechneten Werte aus `docs/can-usb.md`.

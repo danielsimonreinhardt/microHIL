@@ -18,7 +18,7 @@
   - Filterbank-Split gesetzt (`SlaveStartFilterBank = 14`), damit CAN2 später überhaupt empfangen kann
   - Zusatzkommandos über CAN232 hinaus: `B<bit/s>` für krumme Bitraten (u. a. 750 kbit/s, das `python-can` fälschlich auf `S7` mappt) und `Y` für Loopback-Selbsttest ohne Bus
   - Referenz in `docs/can-usb.md`
-  - Protokollschicht (Kommandoparser, Statusflags, Antworten) auf Hardware verifiziert; `O`/`L`/`Y` (Bus tatsächlich aufschalten) schlägt aktuell fehl, siehe `docs/hardware-notes.md` — **CAN1_RX (PB8) liegt offen, kein Transceiver treibt die Leitung**
+  - Vollständig auf Hardware verifiziert: `O`/`L`/`Y` öffnen den Bus, Loopback-Frames (Standard/Extended/beide RTR-Varianten, 1 Mbit/s) laufen fehlerfrei, keine Statusflags, Parallelbetrieb mit dem HIL-Port stabil. Ursache eines zunächst fehlgeschlagenen Bring-ups war ein defekter CAN1-Transceiver (RXD blieb bei ~0,2 V statt ~5 V rezessiv) — Details und Ausschlussdiagnose in `docs/hardware-notes.md`. Noch offen: Test gegen einen echten zweiten Busteilnehmer, Bitraten-Messung am Oszilloskop.
 - USB-Composite-Device mit zwei CDC-ACM-Funktionen (zwei virtuelle COM-Ports): Port 1 = HIL-Kommandoprotokoll, Port 2 = CAN1 — beide gleichzeitig nutzbar, weil sich ein COM-Port unter Windows nur einmal öffnen lässt — **auf Hardware verifiziert** (Enumeration, Parallelbetrieb beider Ports, GUI)
   - CompositeBuilder der ST-USB-Library aus dem passenden Cube-FW-Paket (F4 V1.28.3) ergänzt, CubeMX generiert das für die F4-Serie nicht selbst
   - FIFO-Aufteilung von OTG_FS neu vergeben (fünf TX-FIFOs statt zwei), Endpunktadressen fest zugeordnet
