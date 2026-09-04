@@ -170,9 +170,15 @@ __ALIGN_BEGIN uint8_t USBD_FS_DeviceDesc[USB_LEN_DEV_DESC] __ALIGN_END =
   0x00,                       /*bcdUSB */
 #endif /* (USBD_LPM_ENABLED == 1) */
   0x02,
-  0x02,                       /*bDeviceClass*/
-  0x02,                       /*bDeviceSubClass*/
-  0x00,                       /*bDeviceProtocol*/
+  /* Composite-Device mit zwei CDC-Funktionen ueber IAD: bDeviceClass/Sub/
+   * Protocol muessen die "Multi-Interface Function"-Klasse (0xEF/0x02/0x01)
+   * tragen. Der CubeMX-Default (0x02/0x02/0x00 = CDC direkt am Geraet)
+   * bewirkt, dass Windows den eingebauten CDC-Treiber ohne den Composite-
+   * Parent-Treiber (usbccgp) direkt an Interface 0 bindet und alle weiteren
+   * Interfaces ignoriert - dann erscheint nur ein COM-Port statt zwei. */
+  0xEFU,                      /*bDeviceClass*/
+  0x02U,                      /*bDeviceSubClass*/
+  0x01U,                      /*bDeviceProtocol*/
   USB_MAX_EP0_SIZE,           /*bMaxPacketSize*/
   LOBYTE(USBD_VID),           /*idVendor*/
   HIBYTE(USBD_VID),           /*idVendor*/
