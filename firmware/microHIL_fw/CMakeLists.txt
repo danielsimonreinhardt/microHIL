@@ -54,6 +54,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     Core/Src/protocol.c
+    Core/Src/calibration.c
     Core/Src/can_if.c
     Core/Src/slcan.c
     # Composite-Builder der ST-USB-Device-Library. Aus dem passenden

@@ -37,8 +37,5 @@ Beide Ports lassen sich gleichzeitig benutzen.
   definieren. Vorbereitet ist bereits die Aufteilung der bxCAN-Filterbänke
   (`SlaveStartFilterBank = 14` in `Core/Src/can_if.c`), ohne die CAN2 gar
   nicht empfangen könnte.
-- **`CURR?` in mA umrechnen.** Liefert aktuell die rohe Sense-Spannung in mV;
-  der Shunt-/Verstärkungsfaktor der Strommess-Schaltung fehlt noch, siehe
-  [`docs/protocol.md`](docs/protocol.md).
 - **PWM1-4 auf Hardware verifizieren.** Implementiert und verriegelt, aber
   noch nicht am Gerät getestet.

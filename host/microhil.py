@@ -133,6 +133,19 @@ class MicroHIL:
     def idn(self) -> str:
         return self._command("*IDN?")
 
+    def get_serial(self) -> str:
+        """Eindeutige Board-ID (STM32-UID-basiert) aus *IDN? (Feld SN=...).
+
+        Identisch mit der USB-Seriennummer (unter Windows als SER=... in der
+        hwid sichtbar) - kann genutzt werden, um ein bestimmtes physisches
+        Board wiederzuerkennen, z.B. um bekannte Hardware-Defekte je
+        Exemplar auszublenden (siehe docs/hardware-notes.md).
+        """
+        for field in self.idn().split(","):
+            if field.startswith("SN="):
+                return field[len("SN="):]
+        raise MicroHILError("*IDN? enthaelt kein SN=-Feld (alte Firmware?)")
+
     def set_relay(self, n: int, state: bool) -> None:
         self._command(f"RELAY {n} {int(state)}")
 
@@ -155,8 +168,16 @@ class MicroHIL:
     def set_aout_mv(self, n: int, millivolt: int) -> None:
         self._command(f"AOUT {n} {millivolt}")
 
+    def set_aout_raw_mv(self, n: int, millivolt: int) -> None:
+        """Unkalibrierter DAC-Sollwert (0..3300), fuer Kalibrierung/Diagnose - siehe docs/calibration.md."""
+        self._command(f"AOUTRAW {n} {millivolt}")
+
     def get_ain_mv(self, n: int) -> int:
         return int(self._command(f"AIN? {n}"))
+
+    def get_ain_raw_mv(self, n: int) -> int:
+        """Unkalibrierter ADC-Rohwert in mV, fuer Kalibrierung/Diagnose - siehe docs/calibration.md."""
+        return int(self._command(f"AINRAW? {n}"))
 
     def set_pwr12(self, n: int, state: bool) -> None:
         self._command(f"PWR12 {n} {int(state)}")
@@ -164,9 +185,29 @@ class MicroHIL:
     def get_pwr12(self, n: int) -> bool:
         return self._command(f"PWR12? {n}") == "1"
 
-    def get_curr_mv(self, n: int) -> int:
-        """Rohe Sense-Spannung in mV (noch keine mA-Umrechnung, siehe docs/protocol.md)."""
+    def get_pwr12_fault(self, n: int) -> int:
+        """Bitmaske: Bit0 = eigenes Ueberstromlimit ausgeloest, Bit1 =
+        gemeinsames 1,5A-Eingangsbudget ausgeloest (0 = kein Fault). Erklaert,
+        warum PWR12? trotz gesetzter Schaltanforderung 0 liefert - siehe
+        docs/protocol.md, Abschnitt "Strombegrenzung"."""
+        return int(self._command(f"PWR12FLT? {n}"))
+
+    def set_curr_limit_ma(self, n: int, milliamps: int) -> None:
+        """Stromlimit fuer PWR12-1/2, Default nach Reset 1200 mA. Bei
+        Ueberschreitung >100ms schaltet die Firmware den Kanal ab und
+        verriegelt ihn, bis die Schaltanforderung per set_pwr12(n, False)
+        einmal zurueckgenommen wurde (siehe docs/protocol.md)."""
+        self._command(f"ILIM {n} {milliamps}")
+
+    def get_curr_limit_ma(self, n: int) -> int:
+        return int(self._command(f"ILIM? {n}"))
+
+    def get_curr_ma(self, n: int) -> int:
         return int(self._command(f"CURR? {n}"))
+
+    def get_curr_raw_mv(self, n: int) -> int:
+        """Unkalibrierte Sense-Spannung in mV, fuer Kalibrierung/Diagnose - siehe docs/calibration.md."""
+        return int(self._command(f"CURRRAW? {n}"))
 
     def set_pwm(self, n: int, duty_permille: int) -> None:
         """PWM-Kanal 1-4 (PC6-9). Verriegelt mit OUT 1-4 (siehe docs/protocol.md)."""

@@ -1,4 +1,5 @@
 #include "protocol.h"
+#include "calibration.h"
 #include "main.h"
 #include "usbd_cdc_if.h"
 #include <string.h>
@@ -48,6 +49,37 @@ static const gpio_t pwr12_gpio[2] = {
     {DOUT_12VOUT1_GPIO_Port, DOUT_12VOUT1_Pin},
     {DOUT_12VOUT2_GPIO_Port, DOUT_12VOUT2_Pin},
 };
+
+#define PWR12_LIMIT_DEFAULT_MA  1200
+#define PWR12_TOTAL_BUDGET_MA   1500
+#define PWR12_OC_DEBOUNCE_MS    100U
+#define PWR12_SAMPLE_PERIOD_MS  2U
+
+/* Software-Strombegrenzung fuer PWR12-1/2 (siehe docs/protocol.md,
+ * Abschnitt "Strombegrenzung"). requested_on ist der zuletzt vom Host per
+ * PWR12 gesetzte Sollzustand, unabhaengig vom tatsaechlich geschalteten
+ * GPIO - eine Verriegelung (oc_latched oder pwr12_budget_latched) haelt
+ * den physischen Ausgang aus, obwohl requested_on weiterhin 1 ist, bis der
+ * Host die Schaltanforderung einmal per PWR12 <n> 0 zurueckgenommen hat. */
+typedef struct
+{
+  int32_t limit_ma;
+  uint8_t requested_on;
+  uint8_t oc_latched;
+  uint8_t over_active;
+  uint32_t over_since;
+} pwr12_ch_t;
+
+static pwr12_ch_t pwr12_ch[2] = {
+    {PWR12_LIMIT_DEFAULT_MA, 0, 0, 0, 0},
+    {PWR12_LIMIT_DEFAULT_MA, 0, 0, 0, 0},
+};
+/* Verriegelt sofort (keine Entprellung) beide Kanaele, wenn CURR1+CURR2 in
+ * Summe das gemeinsame Eingangsbudget ueberschreiten - der Eingang versorgt
+ * neben PWR12-1/2 auch die MCU. Loest sich erst, wenn fuer BEIDE Kanaele
+ * die Schaltanforderung zurueckgenommen wurde. */
+static uint8_t pwr12_budget_latched = 0;
+static uint32_t pwr12_last_sample_tick = 0;
 
 /* AIN1..4 -> PA3,PA0,PA1,PA2 (siehe microHIL_fw.ioc) */
 static const uint32_t ain_channel[4] = {ADC_CHANNEL_3, ADC_CHANNEL_0, ADC_CHANNEL_1, ADC_CHANNEL_2};
@@ -138,6 +170,66 @@ static int32_t adc_read_mv(uint32_t channel)
   HAL_ADC_Stop(&hadc1);
 
   return (int32_t)((raw * 3300UL) / 4095UL);
+}
+
+static void pwr12_apply(int idx)
+{
+  int on = pwr12_ch[idx].requested_on && !pwr12_ch[idx].oc_latched && !pwr12_budget_latched;
+  HAL_GPIO_WritePin(pwr12_gpio[idx].port, pwr12_gpio[idx].pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+/* Aus Protocol_Poll() bei jedem Aufruf angestossen, sampled aber nur alle
+ * PWR12_SAMPLE_PERIOD_MS: misst CURR1/2, prueft das gemeinsame Eingangs-
+ * budget (sofort, keine Entprellung) und je Kanal das eigene Limit
+ * (entprellt ueber PWR12_OC_DEBOUNCE_MS, um kurze Einschaltstromspitzen zu
+ * tolerieren) und schaltet die Ausgaenge entsprechend. */
+static void pwr12_guard_poll(void)
+{
+  uint32_t now = HAL_GetTick();
+  if ((now - pwr12_last_sample_tick) < PWR12_SAMPLE_PERIOD_MS)
+  {
+    return;
+  }
+  pwr12_last_sample_tick = now;
+
+  int32_t ma[2];
+  for (int i = 0; i < 2; i++)
+  {
+    int32_t naive_mv = adc_read_mv(curr_channel[i]);
+    ma[i] = (naive_mv < 0) ? 0 : Cal_Apply(&cal_curr[i], naive_mv);
+    if (ma[i] < 0)
+    {
+      ma[i] = 0;
+    }
+  }
+
+  if (!pwr12_budget_latched && (ma[0] + ma[1]) > PWR12_TOTAL_BUDGET_MA)
+  {
+    pwr12_budget_latched = 1;
+  }
+
+  for (int i = 0; i < 2; i++)
+  {
+    if (ma[i] > pwr12_ch[i].limit_ma)
+    {
+      if (!pwr12_ch[i].over_active)
+      {
+        pwr12_ch[i].over_active = 1;
+        pwr12_ch[i].over_since = now;
+      }
+      else if ((now - pwr12_ch[i].over_since) >= PWR12_OC_DEBOUNCE_MS)
+      {
+        pwr12_ch[i].oc_latched = 1;
+      }
+    }
+    else
+    {
+      pwr12_ch[i].over_active = 0;
+    }
+  }
+
+  pwr12_apply(0);
+  pwr12_apply(1);
 }
 
 static void dac_write_mv(uint32_t channel, int32_t mv)
@@ -301,7 +393,38 @@ static void cmd_in_query(void)
   reply_val(HAL_GPIO_ReadPin(in_gpio[idx - 1].port, in_gpio[idx - 1].pin));
 }
 
+/* cal enthaelt (naiver DAC-Sollwert -> tatsaechliche Ausgangsspannung);
+ * fuer die Ansteuerung brauchen wir die Umkehrfunktion, also x/y vertauscht. */
+static int32_t cal_invert(const cal_point_t *cal, int32_t y)
+{
+  cal_point_t inv = {cal->y1, cal->x1, cal->y2, cal->x2};
+  return Cal_Apply(&inv, y);
+}
+
 static void cmd_aout(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  char *a2 = strtok(NULL, " \t");
+  if (!a1 || !a2)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  int idx = atoi(a1);
+  if (idx < 1 || idx > 2)
+  {
+    reply_err("RANGE");
+    return;
+  }
+  int32_t naive_mv = cal_invert(&cal_aout[idx - 1], atoi(a2));
+  dac_write_mv(dac_channel[idx - 1], naive_mv);
+  reply_ok();
+}
+
+/* Steuert den DAC direkt im unkalibrierten 0..3300-mV-Sollwertbereich an,
+ * ohne die AOUT-Kalibrierung anzuwenden - fuer die Kalibrierprozedur
+ * (docs/calibration.md) und zu Diagnosezwecken. */
+static void cmd_aout_raw(void)
 {
   char *a1 = strtok(NULL, " \t");
   char *a2 = strtok(NULL, " \t");
@@ -334,12 +457,51 @@ static void cmd_ain_query(void)
     reply_err("RANGE");
     return;
   }
+  int32_t naive_mv = adc_read_mv(ain_channel[idx - 1]);
+  reply_val(naive_mv < 0 ? naive_mv : Cal_Apply(&cal_ain[idx - 1], naive_mv));
+}
+
+/* Liefert den unkalibrierten ("naiven", raw*3300/4095) mV-Wert ohne
+ * Anwendung von cal_ain - fuer die Kalibrierprozedur (docs/calibration.md)
+ * und zu Diagnosezwecken. */
+static void cmd_ain_raw_query(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  if (!a1)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  int idx = atoi(a1);
+  if (idx < 1 || idx > 4)
+  {
+    reply_err("RANGE");
+    return;
+  }
   reply_val(adc_read_mv(ain_channel[idx - 1]));
 }
 
-/* Liefert aktuell die rohe Sense-Spannung in mV, keine mA-Umrechnung -
- * dafuer fehlt der Shunt-/Verstaerkungsfaktor der Stromsense-Schaltung. */
 static void cmd_curr_query(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  if (!a1)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  int idx = atoi(a1);
+  if (idx < 1 || idx > 2)
+  {
+    reply_err("RANGE");
+    return;
+  }
+  int32_t naive_mv = adc_read_mv(curr_channel[idx - 1]);
+  reply_val(naive_mv < 0 ? naive_mv : Cal_Apply(&cal_curr[idx - 1], naive_mv));
+}
+
+/* Liefert die rohe Sense-Spannung in mV ohne Anwendung von cal_curr - fuer
+ * die Kalibrierprozedur (docs/calibration.md) und zu Diagnosezwecken. */
+static void cmd_curr_raw_query(void)
 {
   char *a1 = strtok(NULL, " \t");
   if (!a1)
@@ -356,6 +518,126 @@ static void cmd_curr_query(void)
   reply_val(adc_read_mv(curr_channel[idx - 1]));
 }
 
+/* Eindeutige Geraete-ID aus der 96-bit STM32-UID (UID_BASE), damit ein Host
+ * (z.B. LabControl) ueber das Kommandoprotokoll dasselbe physische Board
+ * wiedererkennen kann - z.B. um bekannte Hardware-Defekte je Exemplar
+ * auszublenden (siehe docs/hardware-notes.md). Dieselbe Kombination der
+ * UID-Woerter wie in USB_DEVICE/App/usbd_desc.c (Get_SerialNum), damit die
+ * ID mit der USB-Seriennummer (unter Windows als "SER=..." sichtbar)
+ * uebereinstimmt. */
+static void cmd_idn_query(void)
+{
+  uint32_t uid0 = *(uint32_t *)UID_BASE;
+  uint32_t uid1 = *(uint32_t *)(UID_BASE + 0x4);
+  uint32_t uid2 = *(uint32_t *)(UID_BASE + 0x8);
+  char buf[48];
+  snprintf(buf, sizeof(buf), "microHIL,fw=0.1.0,SN=%08lX%04lX\r\n",
+           (unsigned long)(uid0 + uid2), (unsigned long)(uid1 >> 16));
+  send_line(buf);
+}
+
+static void cmd_pwr12_set(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  char *a2 = strtok(NULL, " \t");
+  if (!a1 || !a2)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  int idx = atoi(a1);
+  if (idx < 1 || idx > 2)
+  {
+    reply_err("RANGE");
+    return;
+  }
+  int i = idx - 1;
+  int on = atoi(a2) ? 1 : 0;
+
+  pwr12_ch[i].requested_on = (uint8_t)on;
+  if (!on)
+  {
+    /* Schaltanforderung zurueckgenommen: eigene Ueberstromverriegelung
+     * dieses Kanals loesen; das Sammelbudget-Latch erst, wenn BEIDE Kanaele
+     * zurueckgenommen wurden. */
+    pwr12_ch[i].oc_latched = 0;
+    pwr12_ch[i].over_active = 0;
+    if (!pwr12_ch[0].requested_on && !pwr12_ch[1].requested_on)
+    {
+      pwr12_budget_latched = 0;
+    }
+  }
+  pwr12_apply(i);
+  reply_ok();
+}
+
+/* Diagnose, warum ein Kanal trotz requested_on=1 nicht schaltet (PWR12?
+ * liefert dann weiterhin 0, reine GPIO-Rueckleseung): Bit0 = Kanal per
+ * eigenem Ueberstromlimit verriegelt, Bit1 = gemeinsames Eingangsbudget
+ * (PWR12_TOTAL_BUDGET_MA) verriegelt beide Kanaele. Beide loesen sich erst,
+ * wenn die betroffene(n) Schaltanforderung(en) einmal per PWR12 <n> 0
+ * zurueckgenommen wurden. */
+static void cmd_pwr12_flt_query(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  if (!a1)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  int idx = atoi(a1);
+  if (idx < 1 || idx > 2)
+  {
+    reply_err("RANGE");
+    return;
+  }
+  int32_t flags = 0;
+  if (pwr12_ch[idx - 1].oc_latched) flags |= 1;
+  if (pwr12_budget_latched) flags |= 2;
+  reply_val(flags);
+}
+
+static void cmd_ilim_set(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  char *a2 = strtok(NULL, " \t");
+  if (!a1 || !a2)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  int idx = atoi(a1);
+  if (idx < 1 || idx > 2)
+  {
+    reply_err("RANGE");
+    return;
+  }
+  int32_t ma = atoi(a2);
+  if (ma < 0)
+  {
+    ma = 0;
+  }
+  pwr12_ch[idx - 1].limit_ma = ma;
+  reply_ok();
+}
+
+static void cmd_ilim_query(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  if (!a1)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  int idx = atoi(a1);
+  if (idx < 1 || idx > 2)
+  {
+    reply_err("RANGE");
+    return;
+  }
+  reply_val(pwr12_ch[idx - 1].limit_ma);
+}
+
 static void handle_line(char *line)
 {
   char *cmd = strtok(line, " \t");
@@ -364,24 +646,32 @@ static void handle_line(char *line)
     return;
   }
 
-  if (strcmp(cmd, "*IDN?") == 0)       { send_line("microHIL,fw=0.1.0\r\n"); }
+  if (strcmp(cmd, "*IDN?") == 0)       { cmd_idn_query(); }
   else if (strcmp(cmd, "RELAY") == 0)  { digital_set(relay_gpio, 4); }
   else if (strcmp(cmd, "RELAY?") == 0) { digital_get(relay_gpio, 4); }
   else if (strcmp(cmd, "OUT") == 0)    { cmd_out_set(); }
   else if (strcmp(cmd, "OUT?") == 0)   { digital_get(out_gpio, 8); }
   else if (strcmp(cmd, "IN?") == 0)    { cmd_in_query(); }
   else if (strcmp(cmd, "AOUT") == 0)   { cmd_aout(); }
+  else if (strcmp(cmd, "AOUTRAW") == 0){ cmd_aout_raw(); }
   else if (strcmp(cmd, "AIN?") == 0)   { cmd_ain_query(); }
+  else if (strcmp(cmd, "AINRAW?") == 0){ cmd_ain_raw_query(); }
   else if (strcmp(cmd, "PWM") == 0)    { cmd_pwm(); }
   else if (strcmp(cmd, "PWM?") == 0)   { cmd_pwm_query(); }
-  else if (strcmp(cmd, "PWR12") == 0)  { digital_set(pwr12_gpio, 2); }
+  else if (strcmp(cmd, "PWR12") == 0)  { cmd_pwr12_set(); }
   else if (strcmp(cmd, "PWR12?") == 0) { digital_get(pwr12_gpio, 2); }
+  else if (strcmp(cmd, "PWR12FLT?") == 0) { cmd_pwr12_flt_query(); }
+  else if (strcmp(cmd, "ILIM") == 0)   { cmd_ilim_set(); }
+  else if (strcmp(cmd, "ILIM?") == 0)  { cmd_ilim_query(); }
   else if (strcmp(cmd, "CURR?") == 0)  { cmd_curr_query(); }
+  else if (strcmp(cmd, "CURRRAW?") == 0) { cmd_curr_raw_query(); }
   else                                  { reply_err("UNKNOWN"); }
 }
 
 void Protocol_Poll(void)
 {
+  pwr12_guard_poll();
+
   while (rx_tail != rx_head)
   {
     uint8_t byte = rx_ring[rx_tail];

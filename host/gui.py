@@ -202,7 +202,10 @@ class MicroHILWindow(QMainWindow):
             n = i + 1
             layout.addWidget(QLabel(f"AOUT {n} (mV)"), i, 0)
             spin = QSpinBox()
-            spin.setRange(0, 3300)
+            # Kalibrierter physikalischer Ausgangsbereich, siehe cal_aout in
+            # firmware/microHIL_fw/Core/Src/calibration.c (nominal ~0..12210 mV,
+            # bis zur echten Kalibrierung).
+            spin.setRange(0, 12210)
             spin.setSingleStep(50)
             spin.valueChanged.connect(lambda mv, n=n: self._set_aout(n, mv))
             layout.addWidget(spin, i, 1)
@@ -228,7 +231,7 @@ class MicroHILWindow(QMainWindow):
             btn = ToggleButton("AUS", lambda checked, n=n: self._set_pwr12(n, checked))
             layout.addWidget(btn, i, 1)
             self.pwr12_buttons.append(btn)
-            layout.addWidget(QLabel(f"CURR {n} (mV roh)"), i, 2)
+            layout.addWidget(QLabel(f"CURR {n} (mA)"), i, 2)
             curr_lbl = QLabel("–")
             layout.addWidget(curr_lbl, i, 3)
             self.curr_labels.append(curr_lbl)
@@ -525,7 +528,7 @@ class MicroHILWindow(QMainWindow):
                 lbl.setText(f"{self.hil.get_ain_mv(i)} mV")
 
             for i, lbl in enumerate(self.curr_labels, start=1):
-                lbl.setText(str(self.hil.get_curr_mv(i)))
+                lbl.setText(f"{self.hil.get_curr_ma(i)} mA")
 
         self._guarded(poll)
 
