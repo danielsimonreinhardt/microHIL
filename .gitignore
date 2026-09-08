@@ -13,3 +13,14 @@ Release/
 *.hex
 *.map
 .mxproject
+
+# KiCad (hardware/) — Quellen (.kicad_sch/.kicad_pcb/.kicad_pro), Gerber und
+# das Schaltplan-PDF gehoeren ins Repo, der Rest ist lokal oder generiert.
+*.kicad_prl
+*-bak
+*.kicad_pcb-bak
+*.kicad_sch-bak
+*-backups/
+fp-info-cache
+~*.lck
+*.kicad_pro.lck
