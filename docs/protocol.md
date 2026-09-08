@@ -52,6 +52,13 @@ ein bestimmtes Exemplar wiederzuerkennen (z. B. um bekannte Hardware-Defekte
 je Board auszublenden, siehe `docs/hardware-notes.md`). `host/microhil.py`
 stellt das über `MicroHIL.get_serial()` bereit.
 
+`IN?`/`IN? <n>`: `1` bedeutet 12V liegen am Eingang an, `0` bedeutet kein
+Signal/offen. Alle 8 Kanäle verhalten sich so — der Pulldown am
+Komparator-Eingang, ohne den ein offener Eingang fälschlich `1` lieferte, ist
+auf allen Kanälen nachgerüstet und einzeln verifiziert (siehe
+`docs/hardware-notes.md`). Ausgewertet wird nicht 12V-vs-GND binär, sondern
+die eingestellte REF-Schwelle (REF=12V: ca. 7,2V, REF=5V: ca. 3V).
+
 `AIN?`/`CURR?` liefern kalibrierte physikalische Werte (mV bzw. mA), `AOUT`
 nimmt die gewuenschte physikalische Ausgangsspannung entgegen - siehe
 [calibration.md](calibration.md) für die Kalibrierkonstanten und die
@@ -125,8 +132,12 @@ per `PWR12` gesetzten Schaltanforderung. Kurze Einschaltstromspitzen unter
 **Gesamtbudget:** Der 12V-Eingang versorgt neben PWR12-1/2 auch die MCU,
 deshalb gibt es zusätzlich eine von den Einzellimits unabhängige Prüfung:
 überschreitet CURR1+CURR2 in Summe **1500 mA** (Ihold der gemeinsamen
-Polyfuse F1, siehe `docs/hardware-notes.md`), schaltet die Firmware
-**sofort** (ohne die 100-ms-Entprellung) **beide** Kanäle ab.
+Polyfuse F1, siehe `docs/hardware-notes.md`), schaltet die Firmware **beide**
+Kanäle ab — mit einer kurzen **10-ms-Entprellung** (viel kürzer als die
+100 ms pro Kanal, aber nicht "sofort" ohne jede Filterung: eine erste
+Implementierung ganz ohne Entprellung löste auf Hardware bereits beim
+Einschalten eines einzelnen, unbelasteten Kanals aus — ein Schaltstörimpuls
+traf die eine ungefilterte 2-ms-ADC-Probe, siehe `CHANGELOG.md`).
 
 **Verriegelung:** In beiden Fällen bleibt der Ausgang aus, auch wenn die
 Schaltanforderung (`PWR12 <n> 1`) weiter ansteht — ein einfaches erneutes

@@ -20,18 +20,111 @@ Bei gleichzeitiger Fremdversorgung (z. B. durch ST-Link) kollidieren die
 zur USB-VBUS-Erkennung an einen dedizierten, hochohmig entkoppelten Pin
 legen), nicht direkt auf die Versorgungsschiene.
 
-### Digital-Eingänge lesen unbeschaltet immer High
+### Digital-Eingänge: Ursprüngliche "immer High"-Diagnose war falsch — Pullup ist Teil der Komparator-Stufe, nicht bloß Anti-Floating
 
-**Symptom:** Wenn an einem Digital-Eingang nichts angeschlossen ist, wird er
-immer als High erkannt.
+**Ursprüngliches Symptom (2026-09-06):** Wenn an einem Digital-Eingang nichts
+angeschlossen ist, wird er immer als High erkannt.
 
-**Ursache:** Externer 10-kΩ-Pullup + LPF vor dem GPIO-Pin. Ein interner
-STM32-Pulldown (~40 kΩ typ., siehe Messung beim CAN1_RX-Problem unten) kann
-den niederohmigeren externen 10-kΩ-Pullup nicht überstimmen (Teiler ergibt
-~0.8×VDD am Pin, klar über VIH) — per Software allein nicht lösbar.
+**Ursprüngliche (falsche) Diagnose:** Externer 10-kΩ-Pullup + LPF vor dem
+GPIO-Pin, der einen internen STM32-Pulldown (~40 kΩ) überstimmt — wurde als
+reines Anti-Floating-Problem am GPIO behandelt und der externe Pullup
+entsprechend auf allen 8 Kanälen entfernt, dafür intern `GPIO_PULLDOWN`
+aktiviert (`main.c`, `microHIL_fw.ioc`).
 
-**Fix:** Externer 10-kΩ-Pullup an allen Digital-Inputs entfernt, interner
-STM32-Pulldown übernimmt jetzt den definierten Ruhezustand.
+**Tatsächliche Schaltung (2026-09-08, per Schaltplan-Trace in
+`ELECTRICS/micro_HIL_v0.1/Input-Driver.kicad_sch` verifiziert — Pfad siehe
+[[microhil-kicad-schematic-path]]):** Jeder DIN-Kanal hat einen eigenen
+Komparator (**LM397**, SOT-23-5, laut Bauteilbeschreibung explizit
+"Voltage Comparator with **Open-Collector Output**"), keine simple
+GPIO-Beschaltung:
+
+```
+INPUTn (12V) → Q3x (Verpolschutz, BSS84) → D1x/D2x (8,2V-Zener-Clamp, BZT52B8V2) → IN− (Pin1, LM397)
+REF-Teiler (10k/15k, aus gemeinsamem REF-Netz)                                  → IN+ (Pin3, LM397)
+                                                                                     │
+                                                                            OUT (Pin4, Open-Collector)
+                                                                                     │
+                              10k-Pullup nach +3,3V ───────────────────────────────┤
+                                                                                     │
+                                                                        Testpoint → 3,3k Serie-R → DINn → MCU
+```
+
+Für alle 8 Kanäle nachgewiesen (Pin-4-Ausgang des jeweiligen LM397 liegt per
+Wire-Trace direkt am zugehörigen 10-kΩ-Widerstand nach +3,3V): U21-U24/U25-U28
+(Komparatoren) mit R95/R96/R97/R98 bzw. R115/R116/R117/R118 (Pullups, alle
+10k) — genau diese acht Widerstände sind es, die der Fix vom 2026-09-08
+entfernt hat.
+
+**Root Cause (korrigiert):** Ein Open-Collector-Ausgang kann **nur** nach GND
+ziehen (Transistor leitend) oder floaten (Transistor gesperrt) — er kann
+niemals aktiv High treiben. Der "externe Pullup" war kein optionales
+Anti-Floating-Element am GPIO, sondern die einzige Möglichkeit für diese
+Stufe, überhaupt einen High-Pegel zu erzeugen. Ohne ihn zieht der interne
+~40-kΩ-Pulldown den Pin permanent Richtung Low — unabhängig vom
+Komparator-Zustand und unabhängig von der tatsächlichen Eingangsspannung.
+
+**Damit erklärt sich auch das neue Symptom (2026-09-08, User-Beobachtung):**
+Am MCU-Pin kommt nie ein High-Pegel an, obwohl sicher 12V an `INPUTn` anliegt
+— exakt das erwartete Verhalten eines Open-Collector-Ausgangs ohne Pullup.
+
+**Komparator-Polarität und zweiter Root Cause (geklärt, 2026-09-08, per
+`kicad-cli sch export netlist` gegenverifiziert — manuelles
+Koordinaten-Tracing im Schaltplan war an dieser Stelle zunächst fehlerhaft
+und hat IN+/IN− vertauscht):**
+
+```
+Netz "Net-(D18-K)": D18 Pin1(K), Q32 Pin2, U21 Pin3  → INPUTn liegt an IN+ (nicht-invertierend)
+Netz "Net-(U21--)": R87 Pin2, R88 Pin1, U21 Pin1     → REF-Teiler liegt an IN− (invertierend)
+```
+
+Damit ist die Schaltung ein **Standard-Komparator mit korrekter Polarität**:
+Ausgang High (über den Open-Collector-Pullup), wenn `INPUTn` (IN+) über der
+REF-Schwelle (IN−) liegt — also **High = 12V erkannt, Low = darunter**. Die
+rohe, unveränderte GPIO-Ebene hatte diese Polarität schon immer korrekt; die
+Firmware-Invertierung vom 08.09. (weiter oben) beruhte auf der fehlerhaften
+Leitungsverfolgung und wurde noch am selben Tag zurückgenommen
+(`Core/Src/protocol.c`, `cmd_in_query()` wieder reiner
+`HAL_GPIO_ReadPin(...)`-Durchreich-Wert).
+
+**Der tatsächliche zweite Fehler:** Am `IN+`-Netz hängt laut Netzliste
+**kein einziger Widerstand nach GND** — nur D18 (Zener-Clamp), Q32
+(Verpolschutz) und der Komparator-Eingang selbst. Ein unbeschalteter
+`INPUTn` lässt IN+ dadurch komplett hochohmig floaten; es treibt
+reproduzierbar über die REF-Schwelle (auch bei REF=12V, Schwelle ~7,2V) und
+ist damit von echten 12V nicht zu unterscheiden — exakt das ursprüngliche
+"immer High"-Symptom, nur jetzt mit echter Ursache statt der Pullup/Pulldown-
+Fehldiagnose vom 06.09.
+
+**Fix, auf Hardware verifiziert (2026-09-08):** Bodge-Pulldown-Widerstand von
+IN+ (D18-Kathode-Knoten) nach GND, freitragend nachgerüstet auf Kanal 1 und
+2. Test-Ergebnis nach dem Rework:
+
+| Zustand | `IN? n` (Kanal 1+2) |
+|---|---|
+| offen | `0` |
+| 12V | `1` |
+
+Beide Zustände jetzt sauber unterscheidbar. `GPIO_PULLDOWN`→`GPIO_NOPULL`-
+Rückstellung (Firmware/`.ioc`) ist bereits umgesetzt und mitgeflasht.
+
+**Alle 8 Kanäle nachgerüstet und einzeln verifiziert (2026-09-08):** Bodge-
+Pulldown IN+→GND auf Kanal 3-8 ergänzt (Kanal 1-2 s. o.). Danach jeden Kanal
+einzeln mit 12V beschaltet (alle anderen offen) und `IN?` geprüft — kein
+Kanal zeigt Überkopplung auf einen Nachbarn:
+
+| Kanal | offen | 12V |
+|---|---|---|
+| IN1-IN8 | `0` | `1` |
+
+Alle 8 Kanäle unterscheiden jetzt korrekt "offen" von "12V anliegend". Damit
+ist der DIN-Fehlerkomplex (Pullup fehlte → Pulldown fehlte → Firmware-
+Polarität kurzzeitig falsch invertiert) vollständig abgeschlossen.
+
+**Zusatzverifikation der REF-Schwelle (2026-09-08, Kanal 1+2):** Mit 5V-Signal
+an `INPUTn` sauber schwellenabhängig: REF=12V (Schwelle ~7,2V) → `0`
+(5V < Schwelle), REF=5V (Schwelle ~3V) → `1` (5V > Schwelle). Bestätigt, dass
+der Komparator nicht nur "12V vs. GND", sondern die tatsächliche Schwelle
+korrekt auswertet.
 
 ### CAN1_RX (PB8) liegt offen — Bus kommt nicht hoch
 

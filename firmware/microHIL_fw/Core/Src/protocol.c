@@ -52,8 +52,9 @@ static const gpio_t pwr12_gpio[2] = {
 
 #define PWR12_LIMIT_DEFAULT_MA  1200
 #define PWR12_TOTAL_BUDGET_MA   1500
-#define PWR12_OC_DEBOUNCE_MS    100U
-#define PWR12_SAMPLE_PERIOD_MS  2U
+#define PWR12_OC_DEBOUNCE_MS      100U
+#define PWR12_BUDGET_DEBOUNCE_MS  10U
+#define PWR12_SAMPLE_PERIOD_MS    2U
 
 /* Software-Strombegrenzung fuer PWR12-1/2 (siehe docs/protocol.md,
  * Abschnitt "Strombegrenzung"). requested_on ist der zuletzt vom Host per
@@ -79,6 +80,8 @@ static pwr12_ch_t pwr12_ch[2] = {
  * neben PWR12-1/2 auch die MCU. Loest sich erst, wenn fuer BEIDE Kanaele
  * die Schaltanforderung zurueckgenommen wurde. */
 static uint8_t pwr12_budget_latched = 0;
+static uint8_t pwr12_budget_over_active = 0;
+static uint32_t pwr12_budget_over_since = 0;
 static uint32_t pwr12_last_sample_tick = 0;
 
 /* AIN1..4 -> PA3,PA0,PA1,PA2 (siehe microHIL_fw.ioc) */
@@ -203,9 +206,32 @@ static void pwr12_guard_poll(void)
     }
   }
 
-  if (!pwr12_budget_latched && (ma[0] + ma[1]) > PWR12_TOTAL_BUDGET_MA)
+  /* Kurze Entprellung (viel kuerzer als PWR12_OC_DEBOUNCE_MS) statt echtem
+   * "sofort" ohne jede Filterung: ein Schaltstoerimpuls beim Einschalten
+   * eines Kanals (di/dt der 12V-Endstufe koppelt kurz auf die
+   * Stromsense-Leitung) kann sonst eine einzelne 2-ms-Probe treffen und die
+   * Verriegelung faelschlich ohne jeden echten Ueberstrom ausloesen (auf
+   * Hardware beobachtet, 2026-09-08). PWR12_BUDGET_DEBOUNCE_MS filtert
+   * genau diesen Einzelprobe-Glitch heraus, bleibt aber gegenueber echtem
+   * Ueberstrom praktisch sofort (viel schneller als PWR12_OC_DEBOUNCE_MS). */
+  if (!pwr12_budget_latched)
   {
-    pwr12_budget_latched = 1;
+    if ((ma[0] + ma[1]) > PWR12_TOTAL_BUDGET_MA)
+    {
+      if (!pwr12_budget_over_active)
+      {
+        pwr12_budget_over_active = 1;
+        pwr12_budget_over_since = now;
+      }
+      else if ((now - pwr12_budget_over_since) >= PWR12_BUDGET_DEBOUNCE_MS)
+      {
+        pwr12_budget_latched = 1;
+      }
+    }
+    else
+    {
+      pwr12_budget_over_active = 0;
+    }
   }
 
   for (int i = 0; i < 2; i++)
@@ -367,7 +393,17 @@ static void digital_get(const gpio_t *table, int count)
   reply_val(HAL_GPIO_ReadPin(table[idx - 1].port, table[idx - 1].pin));
 }
 
-/* IN? ohne Nummer liefert alle 8 Eingaenge als Bitmaske, IN1 zuerst. */
+/* IN? ohne Nummer liefert alle 8 Eingaenge als Bitmaske, IN1 zuerst.
+ *
+ * Die analoge Eingangsstufe (12V-Komparator) hat INPUTn am nicht-
+ * invertierenden Eingang (IN+) und eine feste Schwelle am invertierenden
+ * (IN-) - Open-Collector-Ausgang mit Pullup ist High, wenn INPUTn ueber der
+ * Schwelle liegt (12V erkannt), Low darunter (per Datenblatt-Pinout und
+ * kicad-cli-Netzliste verifiziert, siehe docs/hardware-notes.md). Der rohe
+ * GPIO-Wert hat also bereits die richtige Polaritaet: 1 = 12V liegt an,
+ * 0 = kein Signal/offen. Ein unbeschalteter Eingang liest aktuell noch
+ * fehlerhaft als 1 (fehlender Pulldown an IN+, siehe hardware-notes.md,
+ * Hardware-Fix aussteht). */
 static void cmd_in_query(void)
 {
   char *a1 = strtok(NULL, " \t");
