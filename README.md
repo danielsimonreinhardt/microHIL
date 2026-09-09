@@ -25,7 +25,7 @@ a standard SLCAN adapter. Both can be used at the same time.
 | Analog inputs | 4 | calibrated, reported in mV (divider for up to ~13 V) |
 | Analog outputs | 2 | DAC + buffer, calibrated, ~0…12.2 V |
 | Switchable 12 V outputs | 2 | high-side switch with current sense (mA) and firmware current limiting |
-| PWM outputs | 4 | 0…1000 ‰, shares the output stage with `OUT1-4` (interlocked in firmware) |
+| PWM outputs | 4 | 0…1000 ‰, configurable frequency 1 Hz…20 kHz (`PWMFREQ`, shared by all 4 channels, ceiling scope-verified), shares the output stage with `OUT1-4` (interlocked in firmware) |
 | CAN | 1 (+1 reserved) | CAN1 as SLCAN USB adapter; CAN2 reserved for remote control |
 
 Analog channels (`AIN1-4`, `AOUT1-2`, `CURR1-2`) are individually two-point
@@ -167,8 +167,6 @@ Read that file before building a board from these files.
   Frame layout, addressing and bitrate are still to be defined; the bxCAN
   filter bank split needed for CAN2 to receive at all is already in place
   (`SlaveStartFilterBank = 14` in `Core/Src/can_if.c`).
-- **Verify PWM1-4 on hardware.** Implemented and interlocked against
-  `OUT1-4`, but not yet exercised on the device.
 - **CAN1 against a second real bus node**, plus a scope measurement of the
   actual bit rate.
 

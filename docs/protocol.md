@@ -44,6 +44,8 @@ Unterscheidungsmerkmal, siehe dort für die Details je Plattform.
 | `CURRRAW? <1-2>` | `CURRRAW? 1` | `536` |
 | `PWM <1-4> <0-1000>` | `PWM 1 500` | `OK` |
 | `PWM? <1-4>` | `PWM? 1` | `500` |
+| `PWMFREQ <Hz>` | `PWMFREQ 500` | `OK` |
+| `PWMFREQ?` | `PWMFREQ?` | `500` |
 
 `*IDN?`s `SN=`-Feld ist aus der 96-bit STM32-UID abgeleitet und identisch mit
 der USB-Seriennummer (unter Windows als `SER=...` in der `hwid` sichtbar,
@@ -95,6 +97,9 @@ Fehlermeldung auf den gültigen Bereich geklemmt**, nicht abgelehnt:
   stattdessen weiterhin auf `0..3300`.
 - `PWM <1-4> <permille>`: Promille wird auf `0..1000` geklemmt. `PWM 1 -5`
   antwortet `OK` und setzt effektiv 0.
+- `PWMFREQ <Hz>`: wird auf `1..20000` geklemmt. Kein Kanal-/Indexargument
+  (gilt fuer alle 4 PWM-Kanaele gemeinsam, ein Timer), daher kann `PWMFREQ`
+  nur `ERR ARGS` liefern, nie `ERR RANGE`.
 
 Für einen Treiber heißt das: `OK` bei `AOUT`/`PWM` bestätigt nur, dass der
 Kanalindex gültig war — **nicht**, dass der genaue angeforderte Wert übernommen
@@ -113,6 +118,34 @@ Firmwareseitig erzwungen: `OUT <n> 1` (n=1-4) stoppt PWM-Kanal n zwangsweise
 (Duty auf 0), `PWM <n> <permille>` mit `permille > 0` schaltet OUT n
 zwangsweise ab. Es gibt dafür keine eigene Fehlermeldung — die Verriegelung
 wirkt still, der jeweils andere Kanal wird einfach deaktiviert.
+
+## PWM-Frequenz
+
+`PWMFREQ`/`PWMFREQ?` gelten fuer PWM1-4 gemeinsam (ein Timer, TIM3, fuer alle
+4 Kanaele - siehe `pwm_tim_channel` in `Core/Src/protocol.c`). Ein einzelner
+Kanal kann also nicht auf eine andere Frequenz als die uebrigen drei gesetzt
+werden.
+
+Intern wird Prescaler+Autoreload so gewaehlt, dass ARR fuer PSC=0 maximiert
+wird (mehr Aufloesung fuer den Duty Cycle); ein Prescaler kommt nur fuer sehr
+niedrige Frequenzen zum Einsatz. `PWMFREQ?` liefert die durch die
+Ganzzahl-Teiler tatsaechlich erreichte Frequenz zurueck (kann leicht vom
+angeforderten Wert abweichen, analog zur Promille-Klemmung bei `PWM`).
+Ein laufender Duty Cycle (`PWM <n> <permille>`) bleibt beim Frequenzwechsel
+prozentual erhalten - die Firmware rechnet die 4 Compare-Register auf das
+neue ARR um.
+
+Die Obergrenze von `20000` Hz ist per Oszilloskop verifiziert (2026-09-09,
+siehe `docs/hardware-notes.md`): bei 100 kHz zeigt die nachgeschaltete
+Endstufe (PUSH-PULL OUTPUT DRIVER, BC807/BC817, siehe
+`hardware/Output-Driver.kicad_sch`) bereits deutlich verschliffene Flanken
+(spuerbarer Anteil der Periode), bei 20 kHz sind sie noch sauber. Die
+Firmware kappt `PWMFREQ` entsprechend hart auf `20000`, nicht nur informativ
+in der Doku.
+
+Untergrenze `1` Hz ist ein praktischer Wert, nicht das Timer-Minimum: mit
+maximalem 16-Bit-Prescaler und -ARR liegt die theoretisch niedrigste
+TIM3-Frequenz bei ca. 0,0168 Hz (Periode ~59,7 s).
 
 ## Strombegrenzung PWR12-1/2
 

@@ -249,6 +249,14 @@ class MicroHILWindow(QMainWindow):
             spin.valueChanged.connect(lambda permille, n=n: self._set_pwm(n, permille))
             layout.addWidget(spin, 0, i * 2 + 1)
             self.pwm_spins.append(spin)
+
+        layout.addWidget(QLabel("Frequenz (Hz, gilt fuer alle 4 Kanaele)"), 1, 0, 1, 6)
+        self.pwm_freq_spin = QSpinBox()
+        self.pwm_freq_spin.setRange(1, 1_000_000)
+        self.pwm_freq_spin.setSingleStep(100)
+        self.pwm_freq_spin.setValue(1098)
+        self.pwm_freq_spin.valueChanged.connect(self._set_pwm_freq)
+        layout.addWidget(self.pwm_freq_spin, 1, 6, 1, 2)
         return box
 
     # -------------------------------------------------------------- CAN1
@@ -511,6 +519,10 @@ class MicroHILWindow(QMainWindow):
             self.out_buttons[n - 1].set_checked_silently(False)
         if self.hil:
             self._guarded(lambda: self.hil.set_pwm(n, permille))
+
+    def _set_pwm_freq(self, hz: int) -> None:
+        if self.hil:
+            self._guarded(lambda: self.hil.set_pwm_freq_hz(hz))
 
     # -------------------------------------------------------------- Polling
 

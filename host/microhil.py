@@ -215,3 +215,10 @@ class MicroHIL:
 
     def get_pwm(self, n: int) -> int:
         return int(self._command(f"PWM? {n}"))
+
+    def set_pwm_freq_hz(self, hz: int) -> None:
+        """Frequenz fuer PWM1-4 gemeinsam (ein Timer, siehe docs/protocol.md)."""
+        self._command(f"PWMFREQ {hz}")
+
+    def get_pwm_freq_hz(self) -> int:
+        return int(self._command("PWMFREQ?"))

@@ -93,7 +93,22 @@ static const uint32_t dac_channel[2] = {DAC_CHANNEL_2, DAC_CHANNEL_1};
 /* PWM1..4 -> PC6..PC9 (TIM3 CH1..4). Treiben laut Schaltplan dieselbe
  * Endstufe wie OUT1..4 -> softwareseitige Verriegelung in cmd_out_set/pwm_set. */
 static const uint32_t pwm_tim_channel[4] = {TIM_CHANNEL_1, TIM_CHANNEL_2, TIM_CHANNEL_3, TIM_CHANNEL_4};
-#define TIM3_ARR 65535U
+
+/* TIM3-Takt: HSE 8 MHz * (PLLN/PLLM) / PLLP = 72 MHz SYSCLK/HCLK, APB1CLKDivider
+ * = DIV2 verdoppelt den Timer-Takt wieder auf 72 MHz (siehe SystemClock_Config()
+ * in main.c). Gilt fuer alle 4 PWM-Kanaele gemeinsam (ein Timer). */
+#define TIM3_CLK_HZ         72000000UL
+/* Obergrenze per Oszilloskop verifiziert (2026-09-09, siehe CHANGELOG.md und
+ * docs/hardware-notes.md): bei 100 kHz zeigt die Ausgangsstufe (PUSH-PULL
+ * OUTPUT DRIVER, BC807/BC817) bereits deutlich verschliffene Flanken
+ * (spuerbarer Anteil der Periode), bei 20 kHz sind sie noch sauber - daher
+ * hier als Kappung uebernommen. Untergrenze ist ein praktischer Wert, nicht
+ * das Timer-Minimum (das liegt bei PSC=ARR=65535 bei ca. 0,0168 Hz). */
+#define PWM_FREQ_MIN_HZ     1UL
+#define PWM_FREQ_MAX_HZ     20000UL
+
+static uint32_t pwm_arr = 65535U;
+static int pwm_permille[4] = {0, 0, 0, 0};
 
 #define RX_RING_SIZE 256
 #define LINE_MAX 64
@@ -273,13 +288,14 @@ static void pwm_set(int idx, int permille)
 {
   if (permille < 0) permille = 0;
   if (permille > 1000) permille = 1000;
+  pwm_permille[idx] = permille;
 
   if (permille > 0)
   {
     HAL_GPIO_WritePin(out_gpio[idx].port, out_gpio[idx].pin, GPIO_PIN_RESET);
   }
 
-  uint32_t compare = ((uint32_t)permille * TIM3_ARR) / 1000U;
+  uint32_t compare = ((uint32_t)permille * pwm_arr) / 1000U;
   __HAL_TIM_SET_COMPARE(&htim3, pwm_tim_channel[idx], compare);
 
   if (permille > 0)
@@ -290,6 +306,41 @@ static void pwm_set(int idx, int permille)
   {
     HAL_TIM_PWM_Stop(&htim3, pwm_tim_channel[idx]);
   }
+}
+
+/* Setzt die PWM-Frequenz fuer TIM3 (gemeinsam fuer PWM1-4, ein Timer fuer alle
+ * 4 Kanaele - siehe pwm_tim_channel). ARR wird fuer PSC=0 maximiert (mehr
+ * Aufloesung fuer den Duty Cycle), ein Prescaler kommt nur fuer Frequenzen
+ * unterhalb dessen zum Einsatz, was PSC=0 mit maximalem ARR (65535) noch
+ * erreicht. Bestehende Duty-Cycle-Sollwerte (pwm_permille) werden mit dem
+ * neuen ARR neu angewendet, damit sich das prozentuale Tastverhaeltnis durch
+ * den Frequenzwechsel nicht aendert. */
+static void pwm_apply_freq(uint32_t hz)
+{
+  if (hz < PWM_FREQ_MIN_HZ) hz = PWM_FREQ_MIN_HZ;
+  if (hz > PWM_FREQ_MAX_HZ) hz = PWM_FREQ_MAX_HZ;
+
+  uint32_t psc = (TIM3_CLK_HZ / hz / 65536UL);
+  if (psc > 65535UL) psc = 65535UL;
+  uint32_t arr = (TIM3_CLK_HZ / ((psc + 1UL) * hz));
+  if (arr < 1UL) arr = 1UL;
+  if (arr > 65536UL) arr = 65536UL;
+  arr -= 1UL;
+
+  __HAL_TIM_SET_PRESCALER(&htim3, psc);
+  __HAL_TIM_SET_AUTORELOAD(&htim3, arr);
+  HAL_TIM_GenerateEvent(&htim3, TIM_EVENTSOURCE_UPDATE); /* laedt PSC-Shadow-Register sofort */
+  pwm_arr = arr;
+
+  for (int i = 0; i < 4; i++)
+  {
+    pwm_set(i, pwm_permille[i]);
+  }
+}
+
+static uint32_t pwm_get_freq(void)
+{
+  return TIM3_CLK_HZ / ((htim3.Instance->PSC + 1UL) * (pwm_arr + 1UL));
 }
 
 /* OUT 1-4 schaltet bei "an" zwangsweise den Konflikt-PWM-Kanal ab (siehe pwm_set). */
@@ -314,6 +365,7 @@ static void cmd_out_set(void)
   {
     __HAL_TIM_SET_COMPARE(&htim3, pwm_tim_channel[idx - 1], 0);
     HAL_TIM_PWM_Stop(&htim3, pwm_tim_channel[idx - 1]);
+    pwm_permille[idx - 1] = 0; /* sonst wuerde ein spaeterer PWMFREQ-Wechsel den Duty wiederherstellen */
   }
 
   HAL_GPIO_WritePin(out_gpio[idx - 1].port, out_gpio[idx - 1].pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
@@ -354,7 +406,26 @@ static void cmd_pwm_query(void)
     return;
   }
   uint32_t compare = __HAL_TIM_GET_COMPARE(&htim3, pwm_tim_channel[idx - 1]);
-  reply_val((int32_t)((compare * 1000UL) / TIM3_ARR));
+  reply_val((int32_t)((compare * 1000UL) / pwm_arr));
+}
+
+static void cmd_pwmfreq(void)
+{
+  char *a1 = strtok(NULL, " \t");
+  if (!a1)
+  {
+    reply_err("ARGS");
+    return;
+  }
+  long hz = atol(a1);
+  if (hz < 0) hz = 0;
+  pwm_apply_freq((uint32_t)hz);
+  reply_ok();
+}
+
+static void cmd_pwmfreq_query(void)
+{
+  reply_val((int32_t)pwm_get_freq());
 }
 
 static void digital_set(const gpio_t *table, int count)
@@ -694,6 +765,8 @@ static void handle_line(char *line)
   else if (strcmp(cmd, "AINRAW?") == 0){ cmd_ain_raw_query(); }
   else if (strcmp(cmd, "PWM") == 0)    { cmd_pwm(); }
   else if (strcmp(cmd, "PWM?") == 0)   { cmd_pwm_query(); }
+  else if (strcmp(cmd, "PWMFREQ") == 0) { cmd_pwmfreq(); }
+  else if (strcmp(cmd, "PWMFREQ?") == 0) { cmd_pwmfreq_query(); }
   else if (strcmp(cmd, "PWR12") == 0)  { cmd_pwr12_set(); }
   else if (strcmp(cmd, "PWR12?") == 0) { digital_get(pwr12_gpio, 2); }
   else if (strcmp(cmd, "PWR12FLT?") == 0) { cmd_pwr12_flt_query(); }

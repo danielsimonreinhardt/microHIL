@@ -271,3 +271,36 @@ laufen **beide Kanäle gleichzeitig**, muss ihre **Summe** unter 1,5A bleiben
 um F13/F14 nicht unnötig zu erwärmen oder auszulösen (Datenblätter:
 [Digi-Key](https://www.digikey.com/en/products/detail/littelfuse-inc/MINISMDC150F-24-2/1113513),
 [PMT200EPE](https://assets.nexperia.com/documents/data-sheet/PMT200EPE.pdf)).
+
+### Obere Grenzfrequenz PWM1-4 (Ausgangsstufe, nicht der Timer)
+
+**Messung (2026-09-09):** PWM1 (PC6) mit 50% Duty Cycle am Oszilloskop bei
+1 kHz, 20 kHz und 100 kHz beobachtet (Signal an der Ausgangsstufe, PUSH-PULL
+OUTPUT DRIVER mit BC807/BC817, siehe `hardware/Output-Driver.kicad_sch`):
+
+- **1 kHz:** Flanken praktisch senkrecht (vernachlässigbarer Anteil der
+  1-ms-Periode).
+- **20 kHz:** Flanken noch deutlich steiler als die 50-µs-Periode, sauber
+  nutzbares Signal.
+- **100 kHz:** Flanken nehmen einen spürbaren Anteil der 10-µs-Periode ein
+  (sichtbar verschliffener Übergang statt scharfer Kante) — die Endstufe
+  stößt hier an ihre Schaltgeschwindigkeit.
+
+**Bei allen drei Frequenzen zusätzlich beobachtet:** Der High-Pegel ist
+sichtbar schmaler als der Low-Pegel, obwohl `PWM?` intern korrekt ~500‰
+zurückliefert — die Verzerrung entsteht also in der analogen Endstufe, nicht
+in der Duty-Cycle-Berechnung der Firmware. Da die Asymmetrie **schon bei
+1 kHz** in gleicher Stärke vorliegt, ist sie **nicht frequenzabhängig**,
+sondern vermutlich eine systematische Eigenschaft der Push-Pull-Stufe
+(unterschiedliche Ausschalt-/Speicherzeiten zwischen dem PNP BC807 und dem
+NPN BC817). Nicht weiter untersucht — für den Anwendungsfall (Schalten,
+keine analoge Signaltreue gefordert) nicht relevant, aber falls ein exaktes
+Tastverhältnis gebraucht wird, im Hinterkopf behalten.
+
+**Root Cause:** keine explizite Ursache ermittelt (kein Bauteildefekt, keine
+Reparatur nötig) — es handelt sich um eine gemessene Charakteristik der
+Endstufe, keinen Fehler.
+
+**Konsequenz:** `PWMFREQ` in der Firmware (`Core/Src/protocol.c`) hart auf
+`1..20000` Hz gekappt statt des zuvor generischen 1-MHz-Werts, siehe
+`docs/protocol.md`, Abschnitt "PWM-Frequenz".
