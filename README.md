@@ -140,6 +140,16 @@ Flashing is over SWD with an ST-Link V2, e.g.:
 STM32_Programmer_CLI -c port=SWD -w build/Debug/microHIL_fw.elf -rst
 ```
 
+With GCC 10.3.1 (the version bundled with STM32CubeIDE 1.10.1, confirmed
+working end-to-end 2026-09-09), the linker fails on all three `.ld` files
+with `non constant or forward reference address expression for section
+.ARM.extab` — the `(READONLY)` section attribute on `.ARM.extab`/`.ARM`/
+`.preinit_array`/`.init_array`/`.fini_array` needs GCC 11+ (each occurrence
+says so in its own comment). Remove `(READONLY)` from those five section
+headers in `STM32F446xx_FLASH.ld` (used by the CMake build) and, for
+STM32CubeIDE's own Eclipse build, `STM32F446RETX_FLASH.ld`/`_RAM.ld` too, if
+building with GCC 10. A GCC 11+ toolchain doesn't need this.
+
 If you regenerate from `microHIL_fw.ioc`, note that the CAN bit timing is
 computed at runtime in `Core/Src/slcan.c` (deliberately not stored in CubeMX)
 and that the CDC composite build needs ST's `CompositeBuilder`, which CubeMX
