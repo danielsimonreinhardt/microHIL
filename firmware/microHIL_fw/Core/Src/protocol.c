@@ -500,14 +500,6 @@ static void cmd_in_query(void)
   reply_val(HAL_GPIO_ReadPin(in_gpio[idx - 1].port, in_gpio[idx - 1].pin));
 }
 
-/* cal enthaelt (naiver DAC-Sollwert -> tatsaechliche Ausgangsspannung);
- * fuer die Ansteuerung brauchen wir die Umkehrfunktion, also x/y vertauscht. */
-static int32_t cal_invert(const cal_point_t *cal, int32_t y)
-{
-  cal_point_t inv = {cal->y1, cal->x1, cal->y2, cal->x2};
-  return Cal_Apply(&inv, y);
-}
-
 static void cmd_aout(void)
 {
   char *a1 = strtok(NULL, " \t");
@@ -523,7 +515,7 @@ static void cmd_aout(void)
     reply_err("RANGE");
     return;
   }
-  int32_t naive_mv = cal_invert(&cal_aout[idx - 1], atoi(a2));
+  int32_t naive_mv = Cal_Invert(&cal_aout[idx - 1], atoi(a2));
   dac_write_mv(dac_channel[idx - 1], naive_mv);
   reply_ok();
 }
